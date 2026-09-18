@@ -38,9 +38,23 @@ export const SERVICES = [
  * Groq exposes an OpenAI-compatible chat-completions API, so the existing
  * `openai` SDK is reused as the transport with this base URL — no second SDK.
  */
-export const AI_PROVIDER = 'Groq' as const;
 export const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+
+/*
+ * Default models. Every one is overridable by environment variable, because a
+ * provider can retire a model id at any time and a hard-coded default would
+ * then break drafting with no way out but a redeploy.
+ */
 export const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b';
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash';
+export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+
+/** Provider order used when AI_PROVIDER_ORDER is unset or unparseable. */
+export const DEFAULT_PROVIDER_ORDER = 'groq,gemini,openai';
+
+/** How long one provider gets before the router moves on. */
+export const AI_TIMEOUT_MS = 20_000;
 
 /** The only OAuth scope the Google Business Profile APIs accept. */
 export const GBP_SCOPE = 'https://www.googleapis.com/auth/business.manage';
@@ -51,8 +65,16 @@ const envSchema = z.object({
   GOOGLE_REDIRECT_URI: z.string().trim().default(''),
   GOOGLE_REFRESH_TOKEN: z.string().trim().default(''),
 
+  AI_PROVIDER_ORDER: z.string().trim().default(DEFAULT_PROVIDER_ORDER),
+
   GROQ_API_KEY: z.string().trim().default(''),
   GROQ_MODEL: z.string().trim().default(DEFAULT_GROQ_MODEL),
+
+  GEMINI_API_KEY: z.string().trim().default(''),
+  GEMINI_MODEL: z.string().trim().default(DEFAULT_GEMINI_MODEL),
+
+  OPENAI_API_KEY: z.string().trim().default(''),
+  OPENAI_MODEL: z.string().trim().default(DEFAULT_OPENAI_MODEL),
 
   CRON_SECRET: z.string().trim().default(''),
 
@@ -109,13 +131,45 @@ export function isGoogleConfigured(refreshTokenFromStore?: string | null): boole
   return isOAuthConfigured() && Boolean(env().GOOGLE_REFRESH_TOKEN || refreshTokenFromStore);
 }
 
-/** The Groq model that will be used. Falls back to the documented default. */
-export function aiModel(): string {
+export function groqModel(): string {
   return env().GROQ_MODEL || DEFAULT_GROQ_MODEL;
 }
 
+export function geminiModel(): string {
+  return env().GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+}
+
+export function openaiModel(): string {
+  return env().OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+}
+
+/**
+ * Provider preference, e.g. "groq,gemini,openai".
+ *
+ * Unknown names are dropped and duplicates collapsed, so a typo degrades the
+ * order rather than breaking drafting. An order that names nothing valid falls
+ * back to the default rather than leaving the router with no providers.
+ */
+export function aiProviderOrder(): string[] {
+  const raw = env().AI_PROVIDER_ORDER || DEFAULT_PROVIDER_ORDER;
+  const known = ['groq', 'gemini', 'openai'];
+  const parsed = raw
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => known.includes(name));
+  const unique = [...new Set(parsed)];
+  return unique.length > 0 ? unique : DEFAULT_PROVIDER_ORDER.split(',');
+}
+
+/** True when at least one provider in the order has a key. */
 export function isAiConfigured(): boolean {
-  return Boolean(env().GROQ_API_KEY);
+  const e = env();
+  const keyFor: Record<string, string> = {
+    groq: e.GROQ_API_KEY,
+    gemini: e.GEMINI_API_KEY,
+    openai: e.OPENAI_API_KEY,
+  };
+  return aiProviderOrder().some((name) => Boolean(keyFor[name]));
 }
 
 export function isCronConfigured(): boolean {
@@ -195,10 +249,12 @@ export type ConfigSummary = {
   oauthConfigured: boolean;
   googleConfigured: boolean;
   aiConfigured: boolean;
-  /** Human-readable provider name. Never a key. */
-  aiProvider: string;
-  /** Model id in use. A model id is not a secret. */
-  aiModel: string;
+  /** Ordered provider names the router will try. Never a key. */
+  aiProviderOrder: string[];
+  /** Which providers hold a credential. Booleans only. */
+  aiProvidersConfigured: Record<string, boolean>;
+  /** Model id per provider. A model id is not a secret. */
+  aiModels: Record<string, string>;
   cronConfigured: boolean;
   adminAuthConfigured: boolean;
   adminAuthMode: AdminAuthMode;
@@ -215,8 +271,13 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
     oauthConfigured: isOAuthConfigured(),
     googleConfigured: isGoogleConfigured(refreshTokenFromStore),
     aiConfigured: isAiConfigured(),
-    aiProvider: AI_PROVIDER,
-    aiModel: aiModel(),
+    aiProviderOrder: aiProviderOrder(),
+    aiProvidersConfigured: {
+      groq: Boolean(e.GROQ_API_KEY),
+      gemini: Boolean(e.GEMINI_API_KEY),
+      openai: Boolean(e.OPENAI_API_KEY),
+    },
+    aiModels: { groq: groqModel(), gemini: geminiModel(), openai: openaiModel() },
     cronConfigured: isCronConfigured(),
     adminAuthConfigured: isAdminAuthConfigured(),
     adminAuthMode: adminAuthMode(),
@@ -242,7 +303,9 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
     );
   }
   if (!isAiConfigured()) {
-    warnings.push('GROQ_API_KEY is not set — AI reply drafting is disabled.');
+    warnings.push(
+      'No AI provider is configured — set GROQ_API_KEY (or GEMINI_API_KEY / OPENAI_API_KEY) to enable reply drafting.',
+    );
   }
   if (!isCronConfigured()) {
     warnings.push('CRON_SECRET is not set — cron endpoints reject every request until it is.');

@@ -58,7 +58,20 @@ import {
 } from '@/components/ui';
 import type { AutomationRun, DashboardSummary, GbpPost, PerformanceSnapshot } from '@/lib/types';
 
-type SettingsPayload = { config: SetupConfig & { cronConfigured: boolean } };
+type SettingsPayload = {
+  config: SetupConfig & {
+    cronConfigured: boolean;
+    aiProviderOrder: string[];
+    aiProvidersConfigured: Record<string, boolean>;
+    aiModels: Record<string, string>;
+  };
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  groq: 'Groq',
+  gemini: 'Gemini',
+  openai: 'OpenAI',
+};
 type PerformancePayload = { snapshot: PerformanceSnapshot; source: 'google' | 'cache' };
 
 function connectionTone(summary: DashboardSummary | null): Tone {
@@ -626,6 +639,73 @@ export default function DashboardOverview() {
               )
             }
           />
+        )}
+      </section>
+
+      {/* --------------------------- AI router ---------------------------- */}
+      <section>
+        <SectionHeader
+          title="AI router"
+          description="Which provider drafts your replies, and what happens if it is unavailable"
+          action={<SectionLink href="/dashboard/settings">Configure</SectionLink>}
+        />
+        {loading || !config ? (
+          <SkeletonCard lines={3} />
+        ) : (
+          (() => {
+            const order = config.aiProviderOrder ?? [];
+            const active = order.filter((name) => config.aiProvidersConfigured?.[name]);
+            const primary = active[0];
+            const fallbacks = active.slice(1);
+            return (
+              <Card padded={false}>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`flex h-9 w-9 items-center justify-center rounded-xl ${
+                        primary ? 'bg-ai-50 text-ai-700' : 'bg-subtle text-ink-500'
+                      }`}
+                    >
+                      <SparkIcon size={18} />
+                    </span>
+                    <div>
+                      <p className="text-[0.875rem] font-semibold text-ink-950">AI router</p>
+                      <p className="text-xs text-ink-500">
+                        {primary
+                          ? `${active.length} provider${active.length === 1 ? '' : 's'} available`
+                          : 'No provider configured'}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Never claims "Ready" unless a provider really has a key. */}
+                  <StatusPill tone={primary ? 'success' : 'neutral'} pulse={Boolean(primary)}>
+                    {primary ? 'Ready' : 'Not configured'}
+                  </StatusPill>
+                </div>
+
+                <dl className="grid grid-cols-2 divide-x divide-line">
+                  <div className="p-3.5">
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                      Primary
+                    </dt>
+                    <dd className="mt-1 truncate text-[0.875rem] font-medium text-ink-900">
+                      {primary ? (PROVIDER_LABELS[primary] ?? primary) : 'Not configured'}
+                    </dd>
+                  </div>
+                  <div className="p-3.5">
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                      Fallbacks
+                    </dt>
+                    <dd className="mt-1 truncate text-[0.875rem] font-medium text-ink-900">
+                      {fallbacks.length > 0
+                        ? fallbacks.map((n) => PROVIDER_LABELS[n] ?? n).join(', ')
+                        : 'Not configured'}
+                    </dd>
+                  </div>
+                </dl>
+              </Card>
+            );
+          })()
         )}
       </section>
 

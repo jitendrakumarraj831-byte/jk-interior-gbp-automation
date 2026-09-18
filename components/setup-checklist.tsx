@@ -16,6 +16,8 @@ export type SetupConfig = {
   aiConfigured: boolean;
   cronConfigured: boolean;
   durableStore: boolean;
+  aiProviderOrder?: string[];
+  aiProvidersConfigured?: Record<string, boolean>;
 };
 
 type Step = {
@@ -29,6 +31,23 @@ type Step = {
   href?: string;
   cta?: string;
 };
+
+const PROVIDER_LABELS: Record<string, string> = {
+  groq: 'Groq',
+  gemini: 'Gemini',
+  openai: 'OpenAI',
+};
+
+/** e.g. "Groq, with Gemini as fallback" — names only, never a key. */
+function describeProviders(config: SetupConfig): string {
+  const active = (config.aiProviderOrder ?? []).filter(
+    (name) => config.aiProvidersConfigured?.[name],
+  );
+  if (active.length === 0) return 'AI provider';
+  const [primary, ...rest] = active.map((name) => PROVIDER_LABELS[name] ?? name);
+  if (rest.length === 0) return `${primary} is`;
+  return `${primary} is, with ${rest.join(' and ')} as fallback,`;
+}
 
 export function buildSteps(config: SetupConfig): Step[] {
   return [
@@ -52,8 +71,8 @@ export function buildSteps(config: SetupConfig): Step[] {
       icon: <SparkIcon size={18} />,
       title: 'AI reply drafts',
       description: config.aiConfigured
-        ? 'Reply drafts are generated automatically for reviews that need an answer.'
-        : 'Add a Groq API key to have replies drafted for you. You still approve every one.',
+        ? `${describeProviders(config)} drafting replies for reviews that need an answer.`
+        : 'Add a Groq API key (or Gemini / OpenAI) to have replies drafted for you. You still approve every one.',
       done: config.aiConfigured,
       status: config.aiConfigured ? 'Active' : 'Not configured',
       tone: 'ai',

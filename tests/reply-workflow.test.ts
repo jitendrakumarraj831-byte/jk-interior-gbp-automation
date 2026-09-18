@@ -16,6 +16,9 @@ const read = (relative: string) => readFileSync(root + relative, 'utf8');
 const publishRoute = read('app/api/reviews/reply/publish/route.ts');
 const draftRoute = read('app/api/reviews/reply/route.ts');
 const aiReply = read('lib/ai-reply.ts');
+const router = read('lib/ai/router.ts');
+const groqAdapter = read('lib/ai/providers/groq.ts');
+const geminiAdapter = read('lib/ai/providers/gemini.ts');
 const tasks = read('lib/tasks.ts');
 
 describe('8. AI produces drafts only', () => {
@@ -67,18 +70,39 @@ describe('10. no force / bypass mechanism', () => {
 });
 
 describe('provider wiring', () => {
-  it('11. the AI client targets Groq, not OpenAI', () => {
-    expect(aiReply).toContain('GROQ_BASE_URL');
-    expect(aiReply).not.toContain('api.openai.com');
-    expect(aiReply).not.toContain('OPENAI_API_KEY');
+  it('11. provider endpoints live in the adapters and are correct', () => {
+    expect(groqAdapter).toContain('GROQ_BASE_URL');
+    expect(geminiAdapter).toContain('GEMINI_BASE_URL');
+    // The prompt layer knows nothing about transports or keys.
+    expect(aiReply).not.toContain('API_KEY');
+    expect(aiReply).not.toContain('baseURL');
+  });
+
+  it('11b. the router, not the prompt layer, owns fallback', () => {
+    expect(router).toContain('shouldFallBack');
+    expect(aiReply).toContain("from './ai/router'");
+  });
+
+  it('11c. no provider adapter can publish to Google', () => {
+    for (const adapter of [groqAdapter, geminiAdapter, router]) {
+      expect(adapter).not.toContain('publishReviewReply');
+      expect(adapter).not.toContain('google-business');
+    }
   });
 
   it('12. no NEXT_PUBLIC_ variable is ever declared or read', () => {
     // Matches a real declaration or access, not prose warning against one.
     const declaration = /NEXT_PUBLIC_[A-Z0-9_]*\s*[=:]|process\.env\.NEXT_PUBLIC_/;
-    for (const file of ['lib/config.ts', 'lib/ai-reply.ts', '.env.example']) {
-      expect(read(file)).not.toMatch(declaration);
-    }
+    const files = [
+      'lib/config.ts',
+      'lib/ai-reply.ts',
+      'lib/ai/router.ts',
+      'lib/ai/providers/groq.ts',
+      'lib/ai/providers/gemini.ts',
+      'lib/ai/providers/openai.ts',
+      '.env.example',
+    ];
+    for (const file of files) expect(read(file)).not.toMatch(declaration);
   });
 
   it('13. the AI module is never imported by a client component', () => {

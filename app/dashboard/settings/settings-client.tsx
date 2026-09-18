@@ -44,8 +44,9 @@ type Payload = {
     oauthConfigured: boolean;
     googleConfigured: boolean;
     aiConfigured: boolean;
-    aiProvider: string;
-    aiModel: string;
+    aiProviderOrder: string[];
+    aiProvidersConfigured: Record<string, boolean>;
+    aiModels: Record<string, string>;
     cronConfigured: boolean;
     adminAuthConfigured: boolean;
     durableStore: boolean;
@@ -116,6 +117,12 @@ function ConfigRow({ label, ready, note }: { label: string; ready: boolean; note
     </li>
   );
 }
+
+const PROVIDER_LABELS: Record<string, string> = {
+  groq: 'Groq',
+  gemini: 'Gemini',
+  openai: 'OpenAI',
+};
 
 export default function SettingsClient() {
   const router = useRouter();
@@ -259,31 +266,50 @@ export default function SettingsClient() {
               </select>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line pt-4">
-              <div className="min-w-0">
+            <div className="mt-4 border-t border-line pt-4">
+              <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
-                  AI provider
+                  AI providers
                 </p>
-                <p className="mt-0.5 text-[0.875rem] font-medium text-ink-900">
-                  {payload.config.aiProvider}
-                </p>
+                <span className="text-xs text-ink-500">
+                  Order:{' '}
+                  {payload.config.aiProviderOrder
+                    .map((name) => PROVIDER_LABELS[name] ?? name)
+                    .join(' → ')}
+                </span>
               </div>
-              <div className="min-w-0">
-                <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
-                  Model
-                </p>
-                <p className="mt-0.5 truncate text-[0.875rem] font-medium text-ink-900">
-                  {payload.config.aiModel}
-                </p>
-              </div>
-              <Badge tone={payload.config.aiConfigured ? 'success' : 'warning'} dot>
-                {payload.config.aiConfigured ? 'Configured' : 'Not configured'}
-              </Badge>
+
+              <ul className="divide-y divide-line">
+                {payload.config.aiProviderOrder.map((name, index) => {
+                  const configured = payload.config.aiProvidersConfigured[name] ?? false;
+                  return (
+                    <li key={name} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-subtle text-[0.6875rem] font-semibold text-ink-500">
+                        {index + 1}
+                      </span>
+                      <span className="text-[0.875rem] font-medium text-ink-900">
+                        {PROVIDER_LABELS[name] ?? name}
+                      </span>
+                      <code className="min-w-0 truncate text-xs text-ink-500">
+                        {payload.config.aiModels[name]}
+                      </code>
+                      <Badge tone={configured ? 'success' : 'neutral'} dot className="ml-auto">
+                        {configured ? 'Configured' : 'Not configured'}
+                      </Badge>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-2 text-xs leading-relaxed text-ink-400">
+                Order is set by <code>AI_PROVIDER_ORDER</code> in the environment. Keys are never
+                displayed here.
+              </p>
             </div>
 
             {!payload.config.aiConfigured ? (
               <p className="mt-3 rounded-xl bg-warning-50 px-3.5 py-2.5 text-xs leading-relaxed text-warning-700">
-                GROQ_API_KEY is not set, so drafting is unavailable regardless of these switches.
+                No AI provider is configured, so drafting is unavailable regardless of these
+                switches.
               </p>
             ) : null}
           </Card>
@@ -309,8 +335,18 @@ export default function SettingsClient() {
               />
               <ConfigRow
                 label="GROQ_API_KEY"
-                ready={payload.config.aiConfigured}
-                note={`Required for AI reply drafting · provider ${payload.config.aiProvider}`}
+                ready={payload.config.aiProvidersConfigured.groq ?? false}
+                note="Primary AI provider for reply drafting"
+              />
+              <ConfigRow
+                label="GEMINI_API_KEY"
+                ready={payload.config.aiProvidersConfigured.gemini ?? false}
+                note="Optional fallback provider"
+              />
+              <ConfigRow
+                label="OPENAI_API_KEY"
+                ready={payload.config.aiProvidersConfigured.openai ?? false}
+                note="Optional third fallback"
               />
               <ConfigRow
                 label="CRON_SECRET"

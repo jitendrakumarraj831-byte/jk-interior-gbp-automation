@@ -115,6 +115,7 @@ describe('generation', () => {
     expect(result.text).toBe('Thank you Ramesh, glad the ceiling turned out well.');
     expect(result.language).toBe('en');
     expect(result.model).toBe('openai/gpt-oss-20b');
+    expect(result.provider).toBe('groq');
   });
 
   it('4b. replies in Hinglish when the review is Hinglish', async () => {
@@ -136,11 +137,13 @@ describe('failure handling', () => {
     await expect(ai.generateReplyDraft(review)).rejects.toMatchObject({ code: 'AI_FAILED' });
   });
 
-  it('5b. handles rate limiting distinctly', async () => {
+  it('5b. handles rate limiting as a retry-later condition', async () => {
     createImpl = async () => {
       throw Object.assign(new Error('rate limit'), { status: 429 });
     };
     const ai = await loadAi({ GROQ_API_KEY: TEST_KEY });
+    // With only Groq configured the router exhausts its chain and reports 503
+    // ("busy, try shortly") rather than a hard upstream fault.
     await expect(ai.generateReplyDraft(review)).rejects.toMatchObject({
       code: 'AI_FAILED',
       httpStatus: 503,
@@ -152,6 +155,13 @@ describe('failure handling', () => {
       throw Object.assign(new Error('invalid api key'), { status: 401 });
     };
     const ai = await loadAi({ GROQ_API_KEY: TEST_KEY });
+    await expect(ai.generateReplyDraft(review)).rejects.toMatchObject({
+      code: 'AI_NOT_CONFIGURED',
+    });
+  });
+
+  it('5e. a missing key is never reported as a provider outage', async () => {
+    const ai = await loadAi({ GROQ_API_KEY: undefined });
     await expect(ai.generateReplyDraft(review)).rejects.toMatchObject({
       code: 'AI_NOT_CONFIGURED',
     });
