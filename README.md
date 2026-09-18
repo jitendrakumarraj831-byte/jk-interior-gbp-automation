@@ -41,7 +41,7 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | Google OAuth 2.0 (`business.manage` scope) | Built — needs credentials |
 | Business Profile account / location connection | Built — needs API approval |
 | Review retrieval | Built — needs API approval |
-| AI reply drafts (English / Hindi / Hinglish) | Built — needs `OPENAI_API_KEY` |
+| AI reply drafts (English / Hindi / Hinglish) | Built — needs `GROQ_API_KEY` |
 | Manual approval before publishing | Built and enforced server-side |
 | Business Profile post creation | Built — needs API approval |
 | Scheduled posts via Vercel Cron | Built |
@@ -49,6 +49,14 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | Secure cron endpoints | Built |
 | Admin dashboard (light, mobile-first) | Built — password required in production |
 | Health / status monitoring | Built — `/api/health` works today |
+
+### AI provider
+
+Reply drafting runs on **Groq** (`https://api.groq.com/openai/v1`), which speaks
+the OpenAI chat-completions protocol. The existing `openai` npm package is reused
+purely as the HTTP transport, pointed at Groq's base URL — there is no second SDK
+and no OpenAI account or key involved. Set `GROQ_API_KEY`; override the model with
+`GROQ_MODEL` if you want something other than `openai/gpt-oss-20b`.
 
 ### The review reply workflow
 
@@ -127,8 +135,8 @@ Copy `.env.example` → `.env.local`. **Never commit `.env.local`.**
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | — | Enables AI reply drafting. Without it, drafting is disabled (everything else works). |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model used for drafts |
+| `GROQ_API_KEY` | — | Enables AI reply drafting via Groq. Without it, drafting is disabled (everything else works). |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` | Groq model used for drafts |
 | `UPSTASH_REDIS_REST_URL` | — | Durable storage for drafts, posts, run log |
 | `UPSTASH_REDIS_REST_TOKEN` | — | Paired with the URL above |
 | `GBP_ACCOUNT_NAME` | auto-detected | Pin the account, e.g. `accounts/1234567890` |
@@ -276,7 +284,8 @@ GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GOOGLE_REDIRECT_URI        = https://<your-domain>/api/auth/google/callback
 GOOGLE_REFRESH_TOKEN
-OPENAI_API_KEY
+GROQ_API_KEY
+GROQ_MODEL
 CRON_SECRET
 ADMIN_PASSWORD
 SESSION_SECRET
@@ -345,7 +354,7 @@ When the approval email arrives:
    `GBP_LOCATION_NAME`).
 5. Check `/api/health` — `googleConfigured` flips to `true`.
 6. Open **Reviews**. Live reviews load.
-7. Add `OPENAI_API_KEY` to enable drafting, then **Drafts** to approve replies.
+7. Add `GROQ_API_KEY` to enable drafting, then **Drafts** to approve replies.
 
 No code changes are required at any step.
 
@@ -411,7 +420,7 @@ No code changes are required at any step.
 **Your responsibilities**
 
 - Never commit `.env.local`. It is git-ignored — keep it that way.
-- Never paste a refresh token, client secret, `OPENAI_API_KEY` or `CRON_SECRET`
+- Never paste a refresh token, client secret, `GROQ_API_KEY` or `CRON_SECRET`
   into an issue, a commit, a screenshot or a chat.
 - Set `ADMIN_PASSWORD` and `SESSION_SECRET` before going live. The app enforces
   this: production refuses to serve the dashboard or any admin API without them.

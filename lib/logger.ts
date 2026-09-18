@@ -11,7 +11,8 @@ const SECRET_KEY_PATTERN =
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /ya29\.[\w.-]+/g, // Google access tokens
   /1\/\/[\w-]{20,}/g, // Google refresh tokens
-  /sk-[A-Za-z0-9_-]{16,}/g, // OpenAI keys
+  /sk-[A-Za-z0-9_-]{16,}/g, // OpenAI-style keys
+  /gsk_[A-Za-z0-9_-]{16,}/g, // Groq keys
   /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi,
   /GOCSPX-[\w-]+/g, // Google client secrets
 ];

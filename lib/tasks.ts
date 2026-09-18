@@ -110,7 +110,7 @@ export async function generateDrafts(): Promise<AutomationRun> {
     if (!isAiConfigured()) {
       throw new AppError(
         'AI_NOT_CONFIGURED',
-        'OPENAI_API_KEY is not set, so no reply drafts can be generated.',
+        'GROQ_API_KEY is not set, so no reply drafts can be generated.',
         503,
       );
     }

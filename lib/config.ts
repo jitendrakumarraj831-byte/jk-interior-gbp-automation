@@ -15,6 +15,7 @@ import { redact } from './logger';
 
 export const BUSINESS = {
   name: 'JK Interior',
+  location: 'Forbesganj, Bihar',
   website: 'https://www.jkinterior.online',
   googleCloudProjectId: 'jk-interior-gbp-automation',
 } as const;
@@ -23,16 +24,23 @@ export const BUSINESS = {
 export const SERVICES = [
   'Gypsum False Ceiling',
   'PVC Ceiling',
-  'Grid Ceiling',
-  'PVC Wall Panels',
   'WPC Louvers',
-  'WPC Fluted Panels',
-  'UV Marble Sheet',
-  'TV Unit Design',
+  'Fluted Panels',
+  'UV Marble Sheets',
+  'TV Units',
   'Gypsum Board Partition',
-  'Wall Panelling',
   'Interior Work',
 ] as const;
+
+/**
+ * AI provider for review reply drafting.
+ *
+ * Groq exposes an OpenAI-compatible chat-completions API, so the existing
+ * `openai` SDK is reused as the transport with this base URL — no second SDK.
+ */
+export const AI_PROVIDER = 'Groq' as const;
+export const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+export const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b';
 
 /** The only OAuth scope the Google Business Profile APIs accept. */
 export const GBP_SCOPE = 'https://www.googleapis.com/auth/business.manage';
@@ -43,8 +51,8 @@ const envSchema = z.object({
   GOOGLE_REDIRECT_URI: z.string().trim().default(''),
   GOOGLE_REFRESH_TOKEN: z.string().trim().default(''),
 
-  OPENAI_API_KEY: z.string().trim().default(''),
-  OPENAI_MODEL: z.string().trim().default('gpt-4o-mini'),
+  GROQ_API_KEY: z.string().trim().default(''),
+  GROQ_MODEL: z.string().trim().default(DEFAULT_GROQ_MODEL),
 
   CRON_SECRET: z.string().trim().default(''),
 
@@ -101,8 +109,13 @@ export function isGoogleConfigured(refreshTokenFromStore?: string | null): boole
   return isOAuthConfigured() && Boolean(env().GOOGLE_REFRESH_TOKEN || refreshTokenFromStore);
 }
 
+/** The Groq model that will be used. Falls back to the documented default. */
+export function aiModel(): string {
+  return env().GROQ_MODEL || DEFAULT_GROQ_MODEL;
+}
+
 export function isAiConfigured(): boolean {
-  return Boolean(env().OPENAI_API_KEY);
+  return Boolean(env().GROQ_API_KEY);
 }
 
 export function isCronConfigured(): boolean {
@@ -182,6 +195,10 @@ export type ConfigSummary = {
   oauthConfigured: boolean;
   googleConfigured: boolean;
   aiConfigured: boolean;
+  /** Human-readable provider name. Never a key. */
+  aiProvider: string;
+  /** Model id in use. A model id is not a secret. */
+  aiModel: string;
   cronConfigured: boolean;
   adminAuthConfigured: boolean;
   adminAuthMode: AdminAuthMode;
@@ -198,6 +215,8 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
     oauthConfigured: isOAuthConfigured(),
     googleConfigured: isGoogleConfigured(refreshTokenFromStore),
     aiConfigured: isAiConfigured(),
+    aiProvider: AI_PROVIDER,
+    aiModel: aiModel(),
     cronConfigured: isCronConfigured(),
     adminAuthConfigured: isAdminAuthConfigured(),
     adminAuthMode: adminAuthMode(),
@@ -223,7 +242,7 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
     );
   }
   if (!isAiConfigured()) {
-    warnings.push('OPENAI_API_KEY is not set — AI reply drafting is disabled.');
+    warnings.push('GROQ_API_KEY is not set — AI reply drafting is disabled.');
   }
   if (!isCronConfigured()) {
     warnings.push('CRON_SECRET is not set — cron endpoints reject every request until it is.');

@@ -44,6 +44,8 @@ type Payload = {
     oauthConfigured: boolean;
     googleConfigured: boolean;
     aiConfigured: boolean;
+    aiProvider: string;
+    aiModel: string;
     cronConfigured: boolean;
     adminAuthConfigured: boolean;
     durableStore: boolean;
@@ -257,9 +259,31 @@ export default function SettingsClient() {
               </select>
             </div>
 
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line pt-4">
+              <div className="min-w-0">
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                  AI provider
+                </p>
+                <p className="mt-0.5 text-[0.875rem] font-medium text-ink-900">
+                  {payload.config.aiProvider}
+                </p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                  Model
+                </p>
+                <p className="mt-0.5 truncate text-[0.875rem] font-medium text-ink-900">
+                  {payload.config.aiModel}
+                </p>
+              </div>
+              <Badge tone={payload.config.aiConfigured ? 'success' : 'warning'} dot>
+                {payload.config.aiConfigured ? 'Configured' : 'Not configured'}
+              </Badge>
+            </div>
+
             {!payload.config.aiConfigured ? (
               <p className="mt-3 rounded-xl bg-warning-50 px-3.5 py-2.5 text-xs leading-relaxed text-warning-700">
-                OPENAI_API_KEY is not set, so drafting is unavailable regardless of these switches.
+                GROQ_API_KEY is not set, so drafting is unavailable regardless of these switches.
               </p>
             ) : null}
           </Card>
@@ -284,9 +308,9 @@ export default function SettingsClient() {
                 note="Long-lived credential for the connected profile"
               />
               <ConfigRow
-                label="OPENAI_API_KEY"
+                label="GROQ_API_KEY"
                 ready={payload.config.aiConfigured}
-                note="Required for AI reply drafting"
+                note={`Required for AI reply drafting · provider ${payload.config.aiProvider}`}
               />
               <ConfigRow
                 label="CRON_SECRET"

@@ -53,7 +53,7 @@ export function buildSteps(config: SetupConfig): Step[] {
       title: 'AI reply drafts',
       description: config.aiConfigured
         ? 'Reply drafts are generated automatically for reviews that need an answer.'
-        : 'Add an OpenAI API key to have replies drafted for you. You still approve every one.',
+        : 'Add a Groq API key to have replies drafted for you. You still approve every one.',
       done: config.aiConfigured,
       status: config.aiConfigured ? 'Active' : 'Not configured',
       tone: 'ai',

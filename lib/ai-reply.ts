@@ -1,6 +1,10 @@
 /**
  * AI review-reply drafting for JK Interior.
  *
+ * Provider: Groq. Groq speaks the OpenAI chat-completions protocol, so the
+ * `openai` SDK is reused purely as an HTTP transport pointed at Groq's base
+ * URL — there is no second SDK and no OpenAI account involved.
+ *
  * Output of this module is always a DRAFT. Nothing here publishes anything;
  * publishing lives behind an explicit admin action in
  * /api/reviews/reply/publish.
@@ -8,7 +12,15 @@
 
 import OpenAI from 'openai';
 
-import { BUSINESS, env, isAiConfigured, SERVICES } from './config';
+import {
+  aiModel,
+  AI_PROVIDER,
+  BUSINESS,
+  env,
+  GROQ_BASE_URL,
+  isAiConfigured,
+  SERVICES,
+} from './config';
 import { AppError } from './errors';
 import { log } from './logger';
 import type { Review, ReviewLanguage, StarRating } from './types';
@@ -93,15 +105,16 @@ function toneInstruction(stars: StarRating): string {
     ].join(' ');
   }
   return [
-    'This is a negative review. Do not argue, do not make excuses and do not blame the customer.',
-    'Apologise sincerely for their specific experience, take responsibility for looking into it,',
-    'and invite them to contact the business directly so it can be resolved.',
+    'This is a negative review. Never argue, never make excuses and never blame the customer.',
+    'Acknowledge their specific concern, apologise sincerely for the experience,',
+    'and invite them to contact JK Interior directly so it can be put right.',
+    'Do not promise a refund, a rework or any compensation — only an honest conversation.',
   ].join(' ');
 }
 
 function buildSystemPrompt(language: ReviewLanguage, stars: StarRating): string {
   return [
-    `You write Google review replies for ${BUSINESS.name}, an interior fit-out business in India.`,
+    `You write Google review replies for ${BUSINESS.name}, an interior fit-out business in ${BUSINESS.location}, India.`,
     `Services offered: ${SERVICES.join(', ')}.`,
     '',
     'Rules:',
@@ -111,8 +124,10 @@ function buildSystemPrompt(language: ReviewLanguage, stars: StarRating): string 
     '- Sound like a person, not a template. Vary your opening; never start with "Thank you for your review".',
     '- Reference the actual work or detail the review mentions. If the review has no text, keep it brief and generic but still warm.',
     '- Mention at most one service, and only when the review already refers to it. Never list services. Never keyword-stuff.',
-    '- No emojis, no hashtags, no marketing slogans, no phone numbers, no prices, no links.',
-    '- Never invent facts: no claimed discounts, no promises about dates, no details the review does not contain.',
+    `- Do NOT name the town or district (${BUSINESS.location}, Araria, or any nearby place) unless the reviewer named it first. Location keyword-stuffing reads as spam to customers and to Google.`,
+    '- Never mention AI, automation, bots, or that this reply was generated. Write as the owner.',
+    '- No emojis beyond at most one, no hashtags, no marketing slogans, no phone numbers, no prices, no links.',
+    '- Never invent facts: no discounts, no offers, no warranties or guarantees, no promises about dates, no project details the review does not contain.',
     '- Do not add a signature line or the business name at the end.',
     '',
     toneInstruction(stars),
@@ -141,16 +156,39 @@ export type GeneratedReply = {
 
 let client: OpenAI | null = null;
 
-function openai(): OpenAI {
+/**
+ * Lazily builds the Groq client. Server-only: GROQ_API_KEY is read from the
+ * environment here and never leaves this module.
+ */
+function groq(): OpenAI {
   if (!isAiConfigured()) {
     throw new AppError(
       'AI_NOT_CONFIGURED',
-      'OPENAI_API_KEY is not set, so AI reply drafting is unavailable.',
+      'GROQ_API_KEY is not set, so AI reply drafting is unavailable.',
       503,
     );
   }
-  if (!client) client = new OpenAI({ apiKey: env().OPENAI_API_KEY });
+  if (!client) {
+    client = new OpenAI({
+      apiKey: env().GROQ_API_KEY,
+      baseURL: GROQ_BASE_URL,
+    });
+  }
   return client;
+}
+
+/** Test seam: drop the memoised client so a new key/URL is picked up. */
+export function resetAiClient(): void {
+  client = null;
+}
+
+/** Narrows an unknown SDK rejection to its HTTP status, if it carries one. */
+function errorStatus(error: unknown): number | undefined {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === 'number') return status;
+  }
+  return undefined;
 }
 
 /** Strips wrapper quotes and boilerplate the model sometimes adds anyway. */
@@ -174,11 +212,15 @@ function cleanReply(raw: string): string {
  */
 export async function generateReplyDraft(review: Review): Promise<GeneratedReply> {
   const language = detectLanguage(review.comment);
-  const model = env().OPENAI_MODEL || 'gpt-4o-mini';
+  const model = aiModel();
+
+  // Resolved before the try: a missing/invalid key is a configuration fault and
+  // must surface as AI_NOT_CONFIGURED, not be re-thrown as a provider outage.
+  const gateway = groq();
 
   let completion;
   try {
-    completion = await openai().chat.completions.create({
+    completion = await gateway.chat.completions.create({
       model,
       // Enough variation to avoid templated-sounding replies across reviews.
       temperature: 0.85,
@@ -189,16 +231,43 @@ export async function generateReplyDraft(review: Review): Promise<GeneratedReply
       ],
     });
   } catch (error) {
+    const status = errorStatus(error);
+
+    // The logger redacts credential-shaped strings, and only the provider
+    // name, model id and HTTP status are passed here — never the key.
     log.error('ai-reply', 'Reply generation failed', {
-      error: error instanceof Error ? error.message : String(error),
+      provider: AI_PROVIDER,
       model,
+      status,
+      error: error instanceof Error ? error.message : String(error),
     });
-    throw new AppError('AI_FAILED', 'The AI provider could not generate a reply draft.', 502);
+
+    if (status === 429) {
+      throw new AppError(
+        'AI_FAILED',
+        `${AI_PROVIDER} is rate limiting requests right now. Wait a moment and try again.`,
+        503,
+      );
+    }
+    if (status === 401 || status === 403) {
+      throw new AppError(
+        'AI_NOT_CONFIGURED',
+        `${AI_PROVIDER} rejected the API key. Check GROQ_API_KEY in your environment.`,
+        503,
+      );
+    }
+    throw new AppError(
+      'AI_FAILED',
+      `${AI_PROVIDER} could not generate a reply draft. Nothing was published.`,
+      502,
+    );
   }
 
   const text = cleanReply(completion.choices[0]?.message?.content ?? '');
   if (!text) {
-    throw new AppError('AI_FAILED', 'The AI provider returned an empty reply.', 502);
+    // An empty completion is never substituted with canned text — the caller
+    // surfaces the failure and no draft is stored.
+    throw new AppError('AI_FAILED', `${AI_PROVIDER} returned an empty reply.`, 502);
   }
 
   return { text, language, model };

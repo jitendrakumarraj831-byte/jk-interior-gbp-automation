@@ -12,8 +12,10 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run lint && npm run typecheck && npm run build",
-    "get-refresh-token": "node scripts/get-refresh-token.mjs"
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "get-refresh-token": "node scripts/get-refresh-token.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "google-auth-library": "^11.1.0",
@@ -31,6 +33,7 @@
     "eslint": "^9.39.0",
     "eslint-config-next": "^16.3.5",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
   }
 }
