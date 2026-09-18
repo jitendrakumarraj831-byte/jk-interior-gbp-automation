@@ -87,7 +87,7 @@ function Toggle({
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors duration-200 disabled:opacity-50 ${
+        className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors duration-200 after:absolute after:-inset-y-2.5 after:-inset-x-1 after:content-[''] disabled:opacity-50 ${
           checked ? (warn ? 'bg-warning-600' : 'bg-brand-600') : 'bg-ink-300'
         }`}
       >
@@ -325,7 +325,7 @@ export default function SettingsClient() {
                   href={payload.business.website}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1 text-[0.8125rem] text-brand-700 hover:underline"
+                  className="-ml-2 inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-[0.8125rem] text-brand-700 hover:bg-brand-50"
                 >
                   {payload.business.website.replace(/^https?:\/\//, '')}
                   <ExternalIcon size={13} />

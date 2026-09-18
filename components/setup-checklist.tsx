@@ -7,7 +7,7 @@
  * never a credential value — and turns it into four actionable steps.
  */
 
-import { AutomationIcon, GoogleIcon, InboxIcon, SparkIcon } from './icons';
+import { AutomationIcon, CheckIcon, GoogleIcon, InboxIcon, SparkIcon } from './icons';
 import { ButtonLink, Card, ChecklistItem, Progress, SectionHeader, type Tone } from './ui';
 
 export type SetupConfig = {
@@ -105,19 +105,18 @@ export function SetupChecklist({ config }: { config: SetupConfig }) {
             ? 'Everything is configured. Your profile is running on autopilot.'
             : 'A few steps left before automation runs end to end.'
         }
-        icon={complete ? <GoogleIcon size={18} /> : <AutomationIcon size={18} />}
+        icon={complete ? <CheckIcon size={18} /> : <AutomationIcon size={18} />}
         tone={complete ? 'success' : 'brand'}
         action={
-          <span className="tnum text-sm font-semibold text-ink-700">
-            {done}
-            <span className="font-normal text-ink-400">/{steps.length}</span>
+          <span className="tnum whitespace-nowrap rounded-full bg-subtle px-2.5 py-1 text-xs font-semibold text-ink-700 ring-1 ring-inset ring-line">
+            {done} / {steps.length} completed
           </span>
         }
       />
 
       <Progress value={done} total={steps.length} tone={complete ? 'success' : 'brand'} />
 
-      <ul className="mt-2 divide-y divide-line">
+      <ul className="mt-1 divide-y divide-line">
         {steps.map((step) => (
           <ChecklistItem
             key={step.key}

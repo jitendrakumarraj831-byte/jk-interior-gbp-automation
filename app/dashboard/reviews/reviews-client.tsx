@@ -14,17 +14,26 @@ import { useRouter } from 'next/navigation';
 import { api, ApiError, relativeTime } from '@/lib/client';
 import { ReviewCard } from '@/components/review-card';
 import { StatusNotice } from '@/components/status-notice';
-import { ChevronRightIcon, InfoIcon, RefreshIcon, SparkIcon, StarIcon } from '@/components/icons';
+import {
+  ChevronRightIcon,
+  InfoIcon,
+  RefreshIcon,
+  SendIcon,
+  SparkIcon,
+  StarIcon,
+} from '@/components/icons';
 import {
   Badge,
   Button,
   ButtonLink,
   Callout,
+  Card,
   EmptyState,
   MetricCard,
   MetricRail,
   PageHeader,
   RailItem,
+  SectionHeader,
   Segmented,
   SkeletonCard,
   SkeletonMetrics,
@@ -145,6 +154,57 @@ export default function ReviewsClient() {
             <p>{cacheMessage}</p>
           </Callout>
         </div>
+      ) : null}
+
+      {!loading && !payload && notice ? (
+        <Card className="mt-1">
+          <SectionHeader
+            title="What you'll see here"
+            description="As soon as your profile is linked"
+            icon={<StarIcon size={18} />}
+            tone="warning"
+          />
+          <ul className="space-y-3">
+            {[
+              {
+                icon: <StarIcon size={16} />,
+                tone: 'warning' as const,
+                title: 'Every Google review',
+                body: 'Reviewer, star rating, full text, date and whether it has been answered.',
+              },
+              {
+                icon: <SparkIcon size={16} />,
+                tone: 'ai' as const,
+                title: 'A reply drafted for each one',
+                body: 'Written in the language your customer used — English, Hindi or Hinglish.',
+              },
+              {
+                icon: <SendIcon size={16} />,
+                tone: 'brand' as const,
+                title: 'One tap to publish',
+                body: 'You read and approve every reply before it reaches Google.',
+              },
+            ].map((row) => (
+              <li key={row.title} className="flex gap-3">
+                <span
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                    row.tone === 'warning'
+                      ? 'bg-warning-50 text-warning-700'
+                      : row.tone === 'ai'
+                        ? 'bg-ai-50 text-ai-700'
+                        : 'bg-brand-50 text-brand-700'
+                  }`}
+                >
+                  {row.icon}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[0.875rem] font-medium text-ink-900">{row.title}</p>
+                  <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{row.body}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
       ) : null}
 
       {loading && !payload ? (

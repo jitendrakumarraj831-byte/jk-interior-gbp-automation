@@ -3,31 +3,33 @@
 /**
  * Dashboard home.
  *
- * Reading order, top to bottom: who you are and what you can do right now →
- * is Google connected → the numbers → what still needs setting up → where to
- * go next → what actually happened recently.
+ * Reading order, top to bottom: who you are and what you can do now →
+ * is Google connected → the four numbers that matter → what is left to set up
+ * → shortcuts → the whole product → recent reviews → upcoming posts →
+ * performance → automation health.
  *
- * Every number shown comes from the API. Nothing is estimated, and a section
- * with no data renders an empty state rather than a placeholder figure.
+ * Every figure comes from the API. Nothing is estimated: a metric that is not
+ * available yet renders a dash and says why, never a placeholder number.
  */
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api, ApiError, relativeTime } from '@/lib/client';
+import { api, ApiError, relativeTime, scheduleLabel } from '@/lib/client';
 import { ReviewCard } from '@/components/review-card';
 import { SetupChecklist, type SetupConfig } from '@/components/setup-checklist';
 import {
+  ArrowRightIcon,
   AutomationIcon,
   CalendarIcon,
   ChartIcon,
   ChatIcon,
   CheckCircleIcon,
-  ChevronRightIcon,
+  ClockIcon,
   CursorClickIcon,
   EyeIcon,
   GoogleIcon,
   PhoneIcon,
+  PinIcon,
   PlusIcon,
   PostIcon,
   RefreshIcon,
@@ -44,22 +46,21 @@ import {
   Card,
   EmptyState,
   FeatureCard,
+  KpiGrid,
   MetricCard,
-  MetricRail,
   NavRow,
-  RailItem,
   SectionHeader,
+  SectionLink,
   SkeletonCard,
   SkeletonMetrics,
   StatusPill,
   type Tone,
 } from '@/components/ui';
-import type { DashboardSummary, GbpPost, PerformanceSnapshot } from '@/lib/types';
+import type { AutomationRun, DashboardSummary, GbpPost, PerformanceSnapshot } from '@/lib/types';
 
-type SettingsPayload = { config: SetupConfig };
+type SettingsPayload = { config: SetupConfig & { cronConfigured: boolean } };
 type PerformancePayload = { snapshot: PerformanceSnapshot; source: 'google' | 'cache' };
 
-/** Maps the connection label the server produced onto a visual tone. */
 function connectionTone(summary: DashboardSummary | null): Tone {
   if (!summary) return 'neutral';
   if (summary.connection.connected) return 'google';
@@ -68,14 +69,28 @@ function connectionTone(summary: DashboardSummary | null): Tone {
   return 'neutral';
 }
 
+/**
+ * Next firing of a daily UTC cron, derived from the schedule in vercel.json.
+ * This is read off real configuration, not invented.
+ */
+function nextDailyUtc(hour: number, minute: number): string {
+  const now = new Date();
+  const next = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute),
+  );
+  if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString();
+}
+
 export default function DashboardOverview() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [config, setConfig] = useState<SetupConfig | null>(null);
+  const [config, setConfig] = useState<SettingsPayload['config'] | null>(null);
   const [posts, setPosts] = useState<GbpPost[] | null>(null);
   const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
   const [perfLoading, setPerfLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [synced, setSynced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -96,7 +111,7 @@ export default function DashboardOverview() {
     }
   }, []);
 
-  // Performance is a separate Google call, so it loads independently and never
+  // Performance is a separate Google call, so it loads on its own and never
   // blocks the rest of the page.
   const loadPerformance = useCallback(async () => {
     try {
@@ -116,9 +131,12 @@ export default function DashboardOverview() {
 
   async function syncNow() {
     setSyncing(true);
+    setSynced(false);
     setPerfLoading(true);
     await Promise.all([load(), loadPerformance()]);
     setSyncing(false);
+    setSynced(true);
+    window.setTimeout(() => setSynced(false), 2600);
   }
 
   const connected = summary?.connection.connected ?? false;
@@ -135,27 +153,47 @@ export default function DashboardOverview() {
         .reduce((sum, s) => sum + s.total, 0)
     : null;
 
+  const runs = summary?.automation.lastRuns ?? [];
+  const lastRun: AutomationRun | undefined = runs[0];
+  const runFor = (task: AutomationRun['task']) => runs.find((r) => r.task === task);
+  const cronReady = config?.cronConfigured ?? false;
+
+  const automationTone: Tone = !cronReady ? 'neutral' : runs.length === 0 ? 'warning' : 'success';
+  const automationLabel = !cronReady ? 'Not configured' : runs.length === 0 ? 'Waiting' : 'Ready';
+
   return (
-    <div className="space-y-5 sm:space-y-6">
+    <div className="space-y-4 sm:space-y-5">
       {/* ----------------------------- welcome ---------------------------- */}
-      <section className="animate-fade-up overflow-hidden rounded-panel border border-brand-100 bg-gradient-to-br from-brand-50 via-surface to-surface p-5 shadow-card sm:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <section className="animate-fade-up relative overflow-hidden rounded-panel border border-brand-100 bg-surface p-4 shadow-card sm:p-5">
+        {/* A soft brand wash in the corner rather than a full-bleed banner. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-gradient-to-br from-brand-100 to-brand-50 opacity-70 blur-2xl"
+        />
+        <div className="relative flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <div className="min-w-0">
-            <h1 className="text-[1.375rem] font-semibold tracking-[-0.02em] text-ink-950 sm:text-[1.75rem]">
+            <h1 className="text-[1.5rem] font-semibold leading-tight tracking-[-0.022em] text-ink-950 sm:text-[1.75rem]">
               Welcome back <span aria-hidden="true">👋</span>
             </h1>
-            <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-ink-600 sm:text-[0.9375rem]">
-              Manage your Google Business Profile, save time and stay connected with your customers.
+            <p className="mt-1 text-[0.875rem] leading-relaxed text-ink-600 sm:text-[0.9375rem]">
+              Manage your Google Business Profile smarter.
+            </p>
+            <p className="mt-2 text-[0.75rem] font-medium tracking-wide text-brand-700">
+              Reviews <span className="text-brand-300">•</span> Posts{' '}
+              <span className="text-brand-300">•</span> Performance{' '}
+              <span className="text-brand-300">•</span> Automation
             </p>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
             <Button
               onClick={() => void syncNow()}
               loading={syncing}
-              icon={syncing ? undefined : <RefreshIcon size={17} />}
+              icon={
+                synced ? <CheckCircleIcon size={17} /> : syncing ? undefined : <RefreshIcon size={17} />
+              }
               className="flex-1 sm:flex-none"
             >
-              {syncing ? 'Syncing…' : 'Sync now'}
+              {syncing ? 'Syncing…' : synced ? 'Synced' : 'Sync now'}
             </Button>
             <ButtonLink
               href="/dashboard/settings"
@@ -187,94 +225,130 @@ export default function DashboardOverview() {
       {loading ? (
         <SkeletonCard lines={2} />
       ) : summary ? (
-        <Card className="animate-fade-up">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-3.5">
-              <span
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ${
-                  connected
-                    ? 'bg-google-50 text-google-700 ring-google-100'
-                    : 'bg-subtle text-ink-500 ring-line'
-                }`}
-              >
-                <GoogleIcon size={22} />
-              </span>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-ink-950">Google Business Profile</p>
-                  <StatusPill tone={tone} pulse={connected}>
-                    {summary.connection.label}
-                  </StatusPill>
-                </div>
-                <p className="mt-1 break-words text-[0.8125rem] text-ink-500">
-                  {summary.connection.detail}
+        <Card
+          className={`animate-fade-up ${
+            connected ? 'border-google-100 bg-gradient-to-br from-google-50/60 to-surface' : ''
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ${
+                connected
+                  ? 'bg-google-100 text-google-700 ring-google-100'
+                  : 'bg-subtle text-ink-500 ring-line'
+              }`}
+            >
+              <GoogleIcon size={20} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[0.9375rem] font-semibold text-ink-950">
+                  Google Business Profile
                 </p>
+                <StatusPill tone={tone} pulse={connected}>
+                  {summary.connection.label}
+                </StatusPill>
+              </div>
+
+              {connected ? (
+                <dl className="mt-2.5 grid gap-x-4 gap-y-2 sm:grid-cols-3">
+                  <div className="min-w-0">
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                      Business
+                    </dt>
+                    <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
+                      JK Interior
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                      Location
+                    </dt>
+                    <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
+                      {summary.connection.detail}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                      Last synced
+                    </dt>
+                    <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
+                      {lastRun ? relativeTime(lastRun.startedAt) : 'Not yet'}
+                    </dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-600">
+                  {summary.connection.label === 'Approval pending'
+                    ? 'Your credentials are stored and valid. Google has not yet approved API access for this project — nothing else to do.'
+                    : 'Connect your Google Business Profile to unlock reviews, posts and performance data.'}
+                </p>
+              )}
+
+              <div className="mt-3">
+                <ButtonLink
+                  href="/dashboard/connection"
+                  variant={connected ? 'secondary' : 'primary'}
+                  size="sm"
+                  iconRight={<ArrowRightIcon size={15} />}
+                >
+                  {connected ? 'Manage connection' : 'Connect Google'}
+                </ButtonLink>
               </div>
             </div>
-            <ButtonLink
-              href="/dashboard/connection"
-              variant={connected ? 'secondary' : 'primary'}
-              size="sm"
-              iconRight={<ChevronRightIcon size={15} />}
-            >
-              {connected ? 'Manage' : 'Connect Google'}
-            </ButtonLink>
           </div>
         </Card>
       ) : null}
 
-      {/* ---------------------------- metrics ----------------------------- */}
+      {/* ---------------------------- KPI row ----------------------------- */}
       <section>
         <SectionHeader
           title="Your profile at a glance"
-          description={connected ? 'Live from Google Business Profile' : 'Connect Google to see real data'}
+          description={connected ? 'Live from Google Business Profile' : 'Available once connected'}
         />
         {loading ? (
           <SkeletonMetrics />
         ) : (
-          <MetricRail>
-            <RailItem>
-              <MetricCard
-                label="Total reviews"
-                value={summary?.totalReviews ?? null}
-                icon={<StarIcon size={15} />}
-                tone="warning"
-                hint={connected ? undefined : 'Available once connected'}
-              />
-            </RailItem>
-            <RailItem>
-              <MetricCard
-                label="Average rating"
-                value={summary?.averageRating != null ? summary.averageRating.toFixed(1) : null}
-                icon={<StarIcon size={15} />}
-                tone="warning"
-                hint={summary?.averageRating != null ? 'Out of 5' : 'Available once connected'}
-              />
-            </RailItem>
-            <RailItem>
-              <MetricCard
-                label="New reviews"
-                value={summary?.newReviews ?? null}
-                icon={<ChatIcon size={15} />}
-                tone="brand"
-                hint="Last 7 days"
-              />
-            </RailItem>
-            <RailItem>
-              <MetricCard
-                label="Posts published"
-                value={summary?.publishedPosts ?? null}
-                icon={<PostIcon size={15} />}
-                tone="info"
-                hint={`${summary?.scheduledPosts ?? 0} scheduled`}
-              />
-            </RailItem>
-          </MetricRail>
+          <KpiGrid>
+            {/*
+              Counts show a real 0 — that is the true count we hold, not an
+              invented figure. Average rating stays a dash, because printing
+              "0.0" would assert a rating the business does not have.
+            */}
+            <MetricCard
+              label="Total reviews"
+              value={summary?.totalReviews ?? 0}
+              icon={<StarIcon size={15} />}
+              tone="warning"
+              hint={connected ? 'All time' : 'Once connected'}
+            />
+            <MetricCard
+              label="Average rating"
+              value={summary?.averageRating != null ? summary.averageRating.toFixed(1) : null}
+              icon={<StarIcon size={15} />}
+              tone="warning"
+              hint={summary?.averageRating != null ? 'Out of 5' : 'Once connected'}
+            />
+            <MetricCard
+              label="New reviews"
+              value={summary?.newReviews ?? 0}
+              icon={<ChatIcon size={15} />}
+              tone="brand"
+              hint={connected ? 'Last 7 days' : 'Once connected'}
+            />
+            <MetricCard
+              label="Posts published"
+              value={summary?.publishedPosts ?? 0}
+              icon={<PostIcon size={15} />}
+              tone="cyan"
+              hint={`${summary?.scheduledPosts ?? 0} scheduled`}
+            />
+          </KpiGrid>
         )}
       </section>
 
       {/* -------------------------- setup + actions ----------------------- */}
-      <div className="grid gap-5 lg:grid-cols-5 lg:gap-6">
+      <div className="grid gap-4 lg:grid-cols-5 lg:gap-5">
         <div className="min-w-0 lg:col-span-3">
           {loading || !config ? <SkeletonCard lines={5} /> : <SetupChecklist config={config} />}
         </div>
@@ -282,7 +356,7 @@ export default function DashboardOverview() {
         <div className="min-w-0 lg:col-span-2">
           <Card className="h-full">
             <SectionHeader title="Quick actions" description="The things you do most often" />
-            <div className="-mx-1.5 space-y-0.5">
+            <div className="-mx-1">
               <NavRow
                 href="/dashboard/reviews"
                 icon={<StarIcon size={17} />}
@@ -308,7 +382,7 @@ export default function DashboardOverview() {
               <NavRow
                 href="/dashboard/posts"
                 icon={<PlusIcon size={17} />}
-                tone="info"
+                tone="cyan"
                 title="Create a post"
               />
               <NavRow
@@ -331,97 +405,100 @@ export default function DashboardOverview() {
       {/* --------------------------- feature cards ------------------------ */}
       <section>
         <SectionHeader title="Everything you can do" description="Each area of your profile, in one place" />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
           <FeatureCard
             href="/dashboard/reviews"
-            icon={<StarIcon size={20} />}
-            tone="warning"
+            icon={<StarIcon size={19} />}
+            tone="brand"
             title="Reviews"
-            description="Every Google review with its rating, text and reply status."
-            count={summary?.totalReviews ?? null}
+            description="Every review with its rating and reply status."
+            count={summary?.totalReviews ?? 0}
             countLabel="total"
           />
           <FeatureCard
             href="/dashboard/drafts"
-            icon={<SparkIcon size={20} />}
+            icon={<SparkIcon size={19} />}
             tone="ai"
             title="AI Reply Drafts"
-            description="Replies drafted for you in English, Hindi or Hinglish. You approve each one."
-            count={summary?.pendingDrafts ?? null}
+            description="Replies drafted for you. You approve each one."
+            count={summary?.pendingDrafts ?? 0}
             countLabel="awaiting you"
           />
           <FeatureCard
             href="/dashboard/posts"
-            icon={<PostIcon size={20} />}
-            tone="info"
+            icon={<PostIcon size={19} />}
+            tone="cyan"
             title="Business Posts"
-            description="Offers, project updates and festival greetings on your profile."
-            count={summary?.publishedPosts ?? null}
+            description="Offers, updates and festival greetings."
+            count={summary?.publishedPosts ?? 0}
             countLabel="published"
           />
           <FeatureCard
             href="/dashboard/performance"
-            icon={<ChartIcon size={20} />}
+            icon={<ChartIcon size={19} />}
             tone="success"
             title="Performance"
-            description="Views, calls, website clicks and direction requests from Google."
+            description="Views, calls and clicks from Google."
             count={views}
-            countLabel="views, 30 days"
+            countLabel={views != null ? 'views, 30d' : undefined}
           />
           <FeatureCard
             href="/dashboard/connection"
-            icon={<GoogleIcon size={20} />}
-            tone="google"
+            icon={<PinIcon size={19} />}
+            tone="teal"
             title="Locations"
-            description="The Business Profile account and location this dashboard manages."
+            description="The profile and location this dashboard manages."
             count={connected ? 'Connected' : 'Not linked'}
           />
           <FeatureCard
             href="/dashboard/settings"
-            icon={<SettingsIcon size={20} />}
+            icon={<SettingsIcon size={19} />}
             tone="neutral"
             title="Settings"
-            description="Automation behaviour, approval rules and configuration status."
+            description="Automation rules and configuration status."
           />
         </div>
       </section>
 
       {/* ----------------- recent reviews + upcoming posts ---------------- */}
-      <div className="grid gap-5 lg:grid-cols-2 lg:gap-6">
+      <div className="grid gap-4 lg:grid-cols-2 lg:gap-5">
         <section className="min-w-0">
           <SectionHeader
             title="Recent reviews"
             description="What customers said most recently"
             action={
-              <Link
-                href="/dashboard/reviews"
-                className="inline-flex items-center gap-1 rounded-lg text-[0.8125rem] font-medium text-brand-700 hover:underline"
-              >
-                View all <ChevronRightIcon size={14} />
-              </Link>
+              <SectionLink href="/dashboard/reviews">View all</SectionLink>
             }
           />
           {loading ? (
-            <div className="space-y-3">
-              <SkeletonCard lines={2} />
-              <SkeletonCard lines={2} />
-            </div>
+            <SkeletonCard lines={2} />
           ) : summary && summary.recentReviews.length > 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {summary.recentReviews.map((review) => (
-                <ReviewCard key={review.reviewId} review={review} compact />
+                <ReviewCard
+                  key={review.reviewId}
+                  review={review}
+                  compact
+                  action={
+                    review.existingReply ? null : (
+                      <ButtonLink href="/dashboard/drafts" size="sm" variant="soft">
+                        Reply
+                      </ButtonLink>
+                    )
+                  }
+                />
               ))}
             </div>
           ) : (
             <EmptyState
-              icon={<StarIcon size={22} />}
+              icon={<StarIcon size={18} />}
               tone="warning"
               compact
-              title={connected ? 'No reviews yet' : 'Connect Google to see your reviews'}
+              title={connected ? 'No reviews yet' : 'Your latest reviews will appear here'}
               description={
                 connected
-                  ? 'When a customer leaves a review on your Google profile, it appears here within a day.'
-                  : 'Once your Business Profile is linked, every review lands here automatically.'
+                  ? 'New Google reviews land here automatically after each sync.'
+                  : 'Connect Google to automatically bring your latest reviews here.'
               }
               action={
                 connected ? null : (
@@ -439,12 +516,7 @@ export default function DashboardOverview() {
             title="Upcoming posts"
             description="Scheduled to publish automatically"
             action={
-              <Link
-                href="/dashboard/scheduled"
-                className="inline-flex items-center gap-1 rounded-lg text-[0.8125rem] font-medium text-brand-700 hover:underline"
-              >
-                View queue <ChevronRightIcon size={14} />
-              </Link>
+              <SectionLink href="/dashboard/scheduled">View all</SectionLink>
             }
           />
           {loading ? (
@@ -453,14 +525,26 @@ export default function DashboardOverview() {
             <Card padded={false}>
               <ul className="divide-y divide-line">
                 {scheduled.map((post) => (
-                  <li key={post.id} className="flex items-start gap-3 p-4">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-info-50 text-info-700">
-                      <CalendarIcon size={17} />
-                    </span>
+                  <li key={post.id} className="flex items-center gap-3 p-3">
+                    {post.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={post.imageUrl}
+                        alt=""
+                        className="h-11 w-11 shrink-0 rounded-lg bg-subtle object-cover"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-cyan-700">
+                        <CalendarIcon size={18} />
+                      </span>
+                    )}
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-ink-900">{post.title}</p>
-                      <p className="mt-0.5 text-xs text-ink-500">
-                        Publishes {relativeTime(post.scheduledFor)}
+                      <p className="truncate text-[0.875rem] font-medium text-ink-950">
+                        {post.title}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs text-ink-500">
+                        {scheduleLabel(post.scheduledFor)}
                       </p>
                     </div>
                     <Badge tone="info">Scheduled</Badge>
@@ -470,11 +554,11 @@ export default function DashboardOverview() {
             </Card>
           ) : (
             <EmptyState
-              icon={<CalendarIcon size={22} />}
-              tone="info"
+              icon={<CalendarIcon size={18} />}
+              tone="cyan"
               compact
               title="No scheduled posts"
-              description="Queue a post and it will publish on its own — useful for offers and festival greetings."
+              description="Queue a post and it publishes on its own — handy for offers and greetings."
               action={
                 <ButtonLink href="/dashboard/posts" size="sm" icon={<PlusIcon size={15} />}>
                   Create a post
@@ -491,41 +575,48 @@ export default function DashboardOverview() {
           title="Performance overview"
           description="How customers found and contacted you in the last 30 days"
           action={
-            <Link
-              href="/dashboard/performance"
-              className="inline-flex items-center gap-1 rounded-lg text-[0.8125rem] font-medium text-brand-700 hover:underline"
-            >
-              Full report <ChevronRightIcon size={14} />
-            </Link>
+            <SectionLink href="/dashboard/performance">Full report</SectionLink>
           }
         />
         {perfLoading ? (
           <SkeletonMetrics />
         ) : performance && performance.series.length > 0 ? (
-          <MetricRail>
-            <RailItem>
-              <MetricCard label="Profile views" value={views?.toLocaleString('en-IN') ?? null} icon={<EyeIcon size={15} />} tone="brand" />
-            </RailItem>
-            <RailItem>
-              <MetricCard label="Calls" value={metric('CALL_CLICKS')?.toLocaleString('en-IN') ?? null} icon={<PhoneIcon size={15} />} tone="success" />
-            </RailItem>
-            <RailItem>
-              <MetricCard label="Website clicks" value={metric('WEBSITE_CLICKS')?.toLocaleString('en-IN') ?? null} icon={<CursorClickIcon size={15} />} tone="info" />
-            </RailItem>
-            <RailItem>
-              <MetricCard label="Direction requests" value={metric('BUSINESS_DIRECTION_REQUESTS')?.toLocaleString('en-IN') ?? null} icon={<RouteIcon size={15} />} tone="ai" />
-            </RailItem>
-          </MetricRail>
+          <KpiGrid>
+            <MetricCard
+              label="Profile views"
+              value={views?.toLocaleString('en-IN') ?? null}
+              icon={<EyeIcon size={15} />}
+              tone="brand"
+            />
+            <MetricCard
+              label="Calls"
+              value={metric('CALL_CLICKS')?.toLocaleString('en-IN') ?? null}
+              icon={<PhoneIcon size={15} />}
+              tone="success"
+            />
+            <MetricCard
+              label="Website clicks"
+              value={metric('WEBSITE_CLICKS')?.toLocaleString('en-IN') ?? null}
+              icon={<CursorClickIcon size={15} />}
+              tone="cyan"
+            />
+            <MetricCard
+              label="Directions"
+              value={metric('BUSINESS_DIRECTION_REQUESTS')?.toLocaleString('en-IN') ?? null}
+              icon={<RouteIcon size={15} />}
+              tone="teal"
+            />
+          </KpiGrid>
         ) : (
           <EmptyState
-            icon={<ChartIcon size={22} />}
+            icon={<ChartIcon size={18} />}
             tone="success"
             compact
-            title={connected ? 'No performance data yet' : 'Connect Google to see your real data'}
+            title={connected ? 'No performance data yet' : 'Connect Google to see your real performance'}
             description={
               connected
-                ? 'Google reports with about a two-day delay, and new profiles need some activity before numbers appear.'
-                : 'Views, calls, website clicks and direction requests all come straight from Google once your profile is linked.'
+                ? 'Google reports with about a two-day delay, and a newer profile needs some traffic first.'
+                : 'Views, calls, website clicks and direction requests come straight from Google.'
             }
             action={
               connected ? null : (
@@ -542,49 +633,103 @@ export default function DashboardOverview() {
       <section>
         <SectionHeader
           title="Automation status"
-          description="What ran on its own, and when"
+          description="What runs on its own, and when"
           action={
-            <Link
-              href="/dashboard/automation"
-              className="inline-flex items-center gap-1 rounded-lg text-[0.8125rem] font-medium text-brand-700 hover:underline"
-            >
-              Details <ChevronRightIcon size={14} />
-            </Link>
+            <SectionLink href="/dashboard/automation">Details</SectionLink>
           }
         />
         {loading ? (
-          <SkeletonCard lines={3} />
-        ) : summary && summary.automation.lastRuns.length > 0 ? (
+          <SkeletonCard lines={4} />
+        ) : (
           <Card padded={false}>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`flex h-9 w-9 items-center justify-center rounded-xl ${
+                    automationTone === 'success'
+                      ? 'bg-success-50 text-success-700'
+                      : automationTone === 'warning'
+                        ? 'bg-warning-50 text-warning-700'
+                        : 'bg-subtle text-ink-500'
+                  }`}
+                >
+                  <AutomationIcon size={18} />
+                </span>
+                <div>
+                  <p className="text-[0.875rem] font-semibold text-ink-950">Automation</p>
+                  <p className="text-xs text-ink-500">
+                    {cronReady ? 'Daily jobs are authenticated' : 'CRON_SECRET is not set'}
+                  </p>
+                </div>
+              </div>
+              <StatusPill tone={automationTone} pulse={automationTone === 'success'}>
+                {automationLabel}
+              </StatusPill>
+            </div>
+
+            <dl className="grid grid-cols-2 divide-x divide-line border-b border-line">
+              <div className="p-3.5">
+                <dt className="flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                  <ClockIcon size={13} /> Last run
+                </dt>
+                <dd className="mt-1 truncate text-[0.875rem] font-medium text-ink-900">
+                  {lastRun ? relativeTime(lastRun.startedAt) : 'Never'}
+                </dd>
+              </div>
+              <div className="p-3.5">
+                <dt className="flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                  <CalendarIcon size={13} /> Next run
+                </dt>
+                <dd className="mt-1 truncate text-[0.875rem] font-medium text-ink-900">
+                  {cronReady ? scheduleLabel(nextDailyUtc(2, 30)) : 'Not scheduled'}
+                </dd>
+              </div>
+            </dl>
+
             <ul className="divide-y divide-line">
-              {summary.automation.lastRuns.slice(0, 4).map((run) => (
-                <li key={`${run.task}-${run.startedAt}`} className="flex items-start gap-3 p-4">
-                  <span
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                      run.ok ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'
-                    }`}
-                  >
-                    {run.ok ? <CheckCircleIcon size={17} /> : <AutomationIcon size={17} />}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-ink-900">{run.task}</p>
-                    <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{run.summary}</p>
-                  </div>
-                  <span className="shrink-0 whitespace-nowrap text-xs text-ink-400">
-                    {relativeTime(run.startedAt)}
-                  </span>
-                </li>
-              ))}
+              {(
+                [
+                  ['sync-reviews', 'Reviews sync', <StarIcon key="a" size={15} />],
+                  ['publish-posts', 'Post publishing', <PostIcon key="b" size={15} />],
+                  ['sync-performance', 'Performance sync', <ChartIcon key="c" size={15} />],
+                ] as const
+              ).map(([task, label, glyph]) => {
+                const run = runFor(task);
+                const runTone: Tone = !cronReady
+                  ? 'neutral'
+                  : !run
+                    ? 'warning'
+                    : run.ok
+                      ? 'success'
+                      : 'danger';
+                const runLabel = !cronReady
+                  ? 'Not configured'
+                  : !run
+                    ? 'Waiting'
+                    : run.ok
+                      ? 'Healthy'
+                      : 'Failed';
+                return (
+                  <li key={task} className="flex items-center gap-3 px-4 py-3">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-subtle text-ink-500">
+                      {glyph}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[0.875rem] text-ink-800">
+                      {label}
+                    </span>
+                    {run ? (
+                      <span className="hidden shrink-0 text-xs text-ink-400 sm:inline">
+                        {relativeTime(run.startedAt)}
+                      </span>
+                    ) : null}
+                    <Badge tone={runTone} dot>
+                      {runLabel}
+                    </Badge>
+                  </li>
+                );
+              })}
             </ul>
           </Card>
-        ) : (
-          <EmptyState
-            icon={<AutomationIcon size={22} />}
-            tone="brand"
-            compact
-            title="No automation runs yet"
-            description="Scheduled jobs record every run here. You can also trigger one at any time with Sync now."
-          />
         )}
       </section>
     </div>

@@ -215,7 +215,7 @@ function AccountMenu({ authEnabled }: { authEnabled: boolean }) {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Account menu"
-        className="flex h-9 w-9 items-center justify-center rounded-full ring-1 ring-line transition-shadow hover:shadow-xs"
+        className="press flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ring-line hover:shadow-xs"
       >
         <Avatar name="JK Interior" size={32} />
       </button>
@@ -298,19 +298,19 @@ export function TopBar({
   const item = currentItem(pathname);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-line bg-surface/85 backdrop-blur-md">
-      <div className="flex h-14 items-center gap-3 px-4 sm:h-16 sm:px-6">
+    <header className="sticky top-0 z-30 border-b border-line bg-surface/90 shadow-[0_1px_0_0_rgb(16_24_40/0.02),0_4px_16px_-12px_rgb(16_24_40/0.25)] backdrop-blur-xl">
+      <div className="flex h-14 items-center gap-2.5 px-4 sm:h-16 sm:gap-3 sm:px-6">
         {/* Mobile: logo + current section. Desktop: section title only. */}
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Link href="/dashboard" className="lg:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <Link href="/dashboard" className="shrink-0 lg:hidden">
             <Wordmark compact />
           </Link>
           <div className="min-w-0">
-            <p className="truncate text-[0.9375rem] font-semibold tracking-[-0.011em] text-ink-950">
+            <p className="truncate text-[0.9375rem] font-semibold leading-tight tracking-[-0.014em] text-ink-950">
               {item?.label ?? 'Dashboard'}
             </p>
-            <p className="hidden truncate text-xs text-ink-500 sm:block">
-              Google Business Profile Automation
+            <p className="truncate text-[0.6875rem] leading-tight text-ink-500">
+              JK Interior
             </p>
           </div>
         </div>
@@ -322,7 +322,7 @@ export function TopBar({
               ? `${alertCount} setup ${alertCount === 1 ? 'item needs' : 'items need'} attention`
               : 'No setup items need attention'
           }
-          className="relative flex h-9 w-9 items-center justify-center rounded-full text-ink-500 transition-colors hover:bg-subtle hover:text-ink-800"
+          className="press relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ink-500 hover:bg-subtle hover:text-ink-800"
         >
           <BellIcon size={19} />
           {alertCount > 0 ? (
@@ -338,7 +338,7 @@ export function TopBar({
           type="button"
           onClick={onOpenMenu}
           aria-label="Open menu"
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-600 transition-colors hover:bg-subtle lg:hidden"
+          className="press flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ink-600 hover:bg-subtle lg:hidden"
         >
           <MenuIcon size={20} />
         </button>
@@ -474,7 +474,7 @@ export function BottomTabs() {
   return (
     <nav
       aria-label="Primary"
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/92 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_20px_-12px_rgb(16_24_40/0.3)] backdrop-blur-xl lg:hidden"
     >
       <div className="grid grid-cols-5">
         {PRIMARY_NAV.map((item) => {
@@ -485,17 +485,18 @@ export function BottomTabs() {
               key={item.href}
               href={item.href}
               aria-current={active ? 'page' : undefined}
-              className="group flex min-h-[3.5rem] flex-col items-center justify-center gap-1 px-1"
+              className="group flex min-h-[3.5rem] flex-col items-center justify-center gap-1 px-1 active:scale-[0.96]"
+              style={{ transition: 'transform 0.12s var(--ease-out-soft)' }}
             >
               <span
-                className={`flex h-7 w-12 items-center justify-center rounded-full transition-colors duration-150 ${
-                  active ? 'bg-brand-50 text-brand-600' : 'text-ink-400'
+                className={`flex h-7 w-[3.25rem] items-center justify-center rounded-full transition-all duration-200 ${
+                  active ? 'bg-brand-600 text-white shadow-brand' : 'text-ink-400 group-hover:bg-subtle'
                 }`}
               >
                 <Glyph size={19} />
               </span>
               <span
-                className={`max-w-full truncate text-[0.6875rem] leading-none ${
+                className={`max-w-full truncate text-[0.6875rem] leading-none transition-colors ${
                   active ? 'font-semibold text-brand-700' : 'text-ink-500'
                 }`}
               >
@@ -543,7 +544,7 @@ export function AppShell({
       <div className="flex min-h-dvh flex-col">
         <TopBar alertCount={alertCount} authEnabled={authEnabled} onOpenMenu={() => setMenuOpen(true)} />
         {banner}
-        <main className="mx-auto w-full max-w-[80rem] flex-1 px-4 pb-28 pt-5 sm:px-6 sm:pb-10 sm:pt-6 lg:px-8">
+        <main className="mx-auto w-full max-w-[80rem] flex-1 px-4 pb-28 pt-4 sm:px-6 sm:pb-10 sm:pt-6 lg:px-8">
           {children}
         </main>
         <BottomTabs />

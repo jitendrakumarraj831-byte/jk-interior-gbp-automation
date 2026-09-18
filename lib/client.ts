@@ -102,6 +102,28 @@ export function formatDateTime(iso: string | undefined): string {
   });
 }
 
+/**
+ * Human label for a scheduled moment, e.g. "Tomorrow · 10:00 am".
+ * Used for future times, where "in 18 hours" reads worse than the day name.
+ */
+export function scheduleLabel(iso: string | undefined): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const time = date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(date) - startOfDay(new Date())) / 86_400_000);
+
+  if (days === 0) return `Today · ${time}`;
+  if (days === 1) return `Tomorrow · ${time}`;
+  if (days === -1) return `Yesterday · ${time}`;
+  if (days > 1 && days < 7) {
+    return `${date.toLocaleDateString('en-IN', { weekday: 'long' })} · ${time}`;
+  }
+  return `${date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · ${time}`;
+}
+
 export function relativeTime(iso: string | undefined): string {
   if (!iso) return '—';
   const then = new Date(iso).getTime();

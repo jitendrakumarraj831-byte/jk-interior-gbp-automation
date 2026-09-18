@@ -13,7 +13,17 @@ import { ArrowRightIcon, CheckIcon, ChevronRightIcon, StarIcon } from './icons';
 
 /* ============================== tone system ============================== */
 
-export type Tone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'ai' | 'google';
+export type Tone =
+  | 'neutral'
+  | 'brand'
+  | 'success'
+  | 'warning'
+  | 'danger'
+  | 'info'
+  | 'ai'
+  | 'google'
+  | 'cyan'
+  | 'teal';
 
 /** Soft fill + text, for badges and icon tiles. */
 export const TONE_SOFT: Record<Tone, string> = {
@@ -25,6 +35,8 @@ export const TONE_SOFT: Record<Tone, string> = {
   info: 'bg-info-50 text-info-700',
   ai: 'bg-ai-50 text-ai-700',
   google: 'bg-google-50 text-google-700',
+  cyan: 'bg-cyan-50 text-cyan-700',
+  teal: 'bg-teal-50 text-teal-700',
 };
 
 /** Hairline ring matching each tone. */
@@ -37,6 +49,8 @@ const TONE_RING: Record<Tone, string> = {
   info: 'ring-info-100',
   ai: 'ring-ai-100',
   google: 'ring-google-100',
+  cyan: 'ring-cyan-100',
+  teal: 'ring-teal-100',
 };
 
 /** Solid dot, for status indicators. */
@@ -49,6 +63,8 @@ const TONE_DOT: Record<Tone, string> = {
   info: 'bg-info-600',
   ai: 'bg-ai-600',
   google: 'bg-google-600',
+  cyan: 'bg-cyan-600',
+  teal: 'bg-teal-600',
 };
 
 /* ================================= card ================================== */
@@ -99,7 +115,7 @@ export function SectionHeader({
   className?: string;
 }) {
   return (
-    <div className={`mb-4 flex flex-wrap items-start justify-between gap-3 ${className}`}>
+    <div className={`mb-3 flex flex-wrap items-start justify-between gap-3 ${className}`}>
       <div className="flex min-w-0 items-start gap-3">
         {icon ? (
           <span
@@ -109,11 +125,11 @@ export function SectionHeader({
           </span>
         ) : null}
         <div className="min-w-0">
-          <h2 className="text-[0.9375rem] font-semibold tracking-[-0.011em] text-ink-950">
+          <h2 className="text-[1rem] font-semibold tracking-[-0.014em] text-ink-950">
             {title}
           </h2>
           {description ? (
-            <p className="mt-0.5 text-sm leading-relaxed text-ink-500">{description}</p>
+            <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{description}</p>
           ) : null}
         </div>
       </div>
@@ -135,18 +151,18 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <header className="mb-5 flex flex-wrap items-end justify-between gap-x-4 gap-y-3 sm:mb-6">
+    <header className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-3 sm:mb-5">
       <div className="min-w-0">
         {eyebrow ? (
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-brand-600">
             {eyebrow}
           </p>
         ) : null}
-        <h1 className="text-[1.375rem] font-semibold tracking-[-0.02em] text-ink-950 sm:text-[1.75rem]">
+        <h1 className="text-[1.5rem] font-semibold tracking-[-0.022em] text-ink-950 sm:text-[1.75rem]">
           {title}
         </h1>
         {description ? (
-          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-500 sm:text-[0.9375rem]">
+          <p className="mt-1.5 max-w-2xl text-[0.875rem] leading-relaxed text-ink-500 sm:text-[0.9375rem]">
             {description}
           </p>
         ) : null}
@@ -349,10 +365,9 @@ export function MetricCard({
 }) {
   return (
     <div
-      className={`rounded-card border border-line bg-surface p-4 shadow-card transition-shadow duration-200 hover:shadow-raised ${className}`}
+      className={`press rounded-card border border-line bg-surface p-3.5 shadow-card hover:border-line-strong hover:shadow-raised sm:p-4 ${className}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-[0.8125rem] font-medium text-ink-500">{label}</p>
+      <div className="flex items-center gap-2">
         {icon ? (
           <span
             className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${TONE_SOFT[tone]}`}
@@ -360,17 +375,23 @@ export function MetricCard({
             {icon}
           </span>
         ) : null}
+        <p className="min-w-0 truncate text-[0.8125rem] font-medium text-ink-600">{label}</p>
       </div>
       {loading ? (
-        <Skeleton className="mt-2.5 h-8 w-20" />
+        <Skeleton className="mt-2.5 h-7 w-16" />
       ) : (
-        <p className="tnum mt-2 text-[1.75rem] font-semibold leading-none text-ink-950">
+        <p className="tnum mt-2 text-[1.625rem] font-semibold leading-none tracking-[-0.02em] text-ink-950">
           {value ?? '—'}
         </p>
       )}
-      {hint ? <p className="mt-2 line-clamp-1 text-xs text-ink-500">{hint}</p> : null}
+      {hint ? <p className="mt-1.5 line-clamp-1 text-xs text-ink-500">{hint}</p> : null}
     </div>
   );
+}
+
+/** Two columns on a phone, four on desktop. The KPI row of the dashboard. */
+export function KpiGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{children}</div>;
 }
 
 /**
@@ -417,6 +438,8 @@ export function Callout({
     info: 'border-info-100 bg-info-50',
     ai: 'border-ai-100 bg-ai-50',
     google: 'border-google-100 bg-google-50',
+    cyan: 'border-cyan-100 bg-cyan-50',
+    teal: 'border-teal-100 bg-teal-50',
   };
 
   return (
@@ -455,26 +478,29 @@ export function EmptyState({
   description?: string;
   action?: ReactNode;
   tone?: Tone;
+  /** Even tighter, for a section that sits inside another card. */
   compact?: boolean;
 }) {
   return (
     <div
-      className={`flex flex-col items-center rounded-card border border-dashed border-line-strong bg-subtle/40 px-6 text-center ${
-        compact ? 'py-8' : 'py-12'
+      className={`flex flex-col items-center rounded-card border border-dashed border-line-strong bg-subtle/50 px-5 text-center ${
+        compact ? 'py-5' : 'py-6 sm:py-7'
       }`}
     >
       {icon ? (
         <span
-          className={`mb-3 flex h-12 w-12 items-center justify-center rounded-2xl ring-1 ring-inset ${TONE_SOFT[tone]} ${TONE_RING[tone]}`}
+          className={`mb-2.5 flex h-9 w-9 items-center justify-center rounded-xl ring-1 ring-inset ${TONE_SOFT[tone]} ${TONE_RING[tone]}`}
         >
           {icon}
         </span>
       ) : null}
-      <p className="text-[0.9375rem] font-semibold text-ink-900">{title}</p>
+      <p className="text-sm font-semibold text-ink-900">{title}</p>
       {description ? (
-        <p className="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-ink-500">{description}</p>
+        <p className="mx-auto mt-1 max-w-xs text-[0.8125rem] leading-relaxed text-ink-500">
+          {description}
+        </p>
       ) : null}
-      {action ? <div className="mt-4 flex flex-wrap justify-center gap-2">{action}</div> : null}
+      {action ? <div className="mt-3 flex flex-wrap justify-center gap-2">{action}</div> : null}
     </div>
   );
 }
@@ -500,17 +526,18 @@ export function SkeletonCard({ lines = 3, className = '' }: { lines?: number; cl
 
 export function SkeletonMetrics({ count = 4 }: { count?: number }) {
   return (
-    <MetricRail>
+    <KpiGrid>
       {Array.from({ length: count }).map((_, index) => (
-        <RailItem key={index}>
-          <div className="rounded-card border border-line bg-surface p-4 shadow-card">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="mt-3 h-8 w-16" />
-            <Skeleton className="mt-3 h-2.5 w-28" />
+        <div key={index} className="rounded-card border border-line bg-surface p-3.5 shadow-card sm:p-4">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-7 w-7 rounded-lg" />
+            <Skeleton className="h-3 w-20" />
           </div>
-        </RailItem>
+          <Skeleton className="mt-3 h-7 w-14" />
+          <Skeleton className="mt-2 h-2.5 w-24" />
+        </div>
       ))}
-    </MetricRail>
+    </KpiGrid>
   );
 }
 
@@ -645,6 +672,23 @@ export function Segmented<T extends string | number>({
   );
 }
 
+/**
+ * The small "View all" / "Details" link that sits beside a section title.
+ * Padded to a proper tap target, with negative margin so it still lines up
+ * optically with the heading.
+ */
+export function SectionLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="press -mr-2 inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-[0.8125rem] font-medium text-brand-700 hover:bg-brand-50"
+    >
+      {children}
+      <ChevronRightIcon size={14} />
+    </Link>
+  );
+}
+
 /** Row that navigates somewhere. Used in quick actions and list cards. */
 export function NavRow({
   href,
@@ -662,16 +706,18 @@ export function NavRow({
   return (
     <Link
       href={href}
-      className="group flex min-h-12 items-center gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 hover:bg-subtle"
+      className="press group flex min-h-[3rem] items-center gap-3 rounded-xl px-2.5 hover:bg-subtle active:bg-brand-50"
     >
       {icon ? (
         <span
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TONE_SOFT[tone]}`}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-transform duration-150 group-hover:scale-105 ${TONE_SOFT[tone]}`}
         >
           {icon}
         </span>
       ) : null}
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-800">{title}</span>
+      <span className="min-w-0 flex-1 truncate text-[0.875rem] font-medium text-ink-800">
+        {title}
+      </span>
       {meta}
       <ChevronRightIcon
         size={16}
@@ -705,23 +751,23 @@ export function FeatureCard({
   return (
     <Link
       href={href}
-      className="group flex flex-col rounded-card border border-line bg-surface p-4 shadow-card transition-[box-shadow,transform,border-color] duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised"
+      className="press group flex flex-col rounded-card border border-line bg-surface p-3.5 shadow-card hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised sm:p-4"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <span
-          className={`flex h-10 w-10 items-center justify-center rounded-xl ring-1 ring-inset ${TONE_SOFT[tone]} ${TONE_RING[tone]}`}
+          className={`flex h-9 w-9 items-center justify-center rounded-xl ring-1 ring-inset ${TONE_SOFT[tone]} ${TONE_RING[tone]}`}
         >
           {icon}
         </span>
         <ArrowRightIcon
-          size={16}
+          size={15}
           className="mt-1 shrink-0 text-ink-300 transition-transform duration-200 group-hover:translate-x-1 group-hover:text-ink-600"
         />
       </div>
-      <p className="mt-3 text-sm font-semibold text-ink-950">{title}</p>
+      <p className="mt-2.5 text-[0.9375rem] font-semibold leading-snug text-ink-950">{title}</p>
       <p className="mt-1 flex-1 text-[0.8125rem] leading-relaxed text-ink-500">{description}</p>
       {count != null ? (
-        <p className="tnum mt-3 text-sm font-semibold text-ink-800">
+        <p className="tnum mt-2.5 text-[0.8125rem] font-semibold text-ink-800">
           {count}
           {countLabel ? <span className="ml-1 font-normal text-ink-500">{countLabel}</span> : null}
         </p>
@@ -749,23 +795,23 @@ export function ChecklistItem({
   action?: ReactNode;
 }) {
   return (
-    <li className="flex items-start gap-3 py-3.5 first:pt-0 last:pb-0">
+    <li className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
       <span
-        className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ${
+        className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ${
           done ? `${TONE_SOFT.success} ${TONE_RING.success}` : `${TONE_SOFT[tone]} ${TONE_RING[tone]}`
         }`}
       >
-        {done ? <CheckIcon size={18} /> : icon}
+        {done ? <CheckIcon size={16} /> : icon}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <p className="text-sm font-medium text-ink-900">{title}</p>
+          <p className="text-[0.875rem] font-medium text-ink-900">{title}</p>
           <Badge tone={done ? 'success' : tone} dot>
             {status}
           </Badge>
         </div>
-        <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-500">{description}</p>
-        {action ? <div className="mt-2.5">{action}</div> : null}
+        <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{description}</p>
+        {action ? <div className="mt-2">{action}</div> : null}
       </div>
     </li>
   );
