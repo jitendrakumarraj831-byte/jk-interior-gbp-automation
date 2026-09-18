@@ -18,6 +18,7 @@ import {
 } from './config';
 import { AppError, isApprovalPending } from './errors';
 import { log } from './logger';
+import { getStore, nsKey } from './store';
 import type { ApiEnvelope } from './types';
 
 export const ADMIN_COOKIE = 'jk_admin_session';
@@ -209,6 +210,84 @@ export function assertCsrfToken(request: Request): void {
       'Missing or invalid CSRF token. Reload the dashboard and try again.',
       403,
     );
+  }
+}
+
+/* --------------------------- login rate limiting -------------------------- */
+
+/*
+ * Brute-force protection for the admin password.
+ *
+ * Counts failed sign-ins per client and refuses further attempts once the
+ * threshold is hit. Counters live in the shared store, so they are durable when
+ * Upstash is configured; without it they are per-instance and a determined
+ * attacker could get more attempts by hitting different serverless instances.
+ * That is still far better than unlimited, and the honest limitation is
+ * documented in the README rather than papered over.
+ */
+const LOGIN_MAX_ATTEMPTS = 8;
+const LOGIN_WINDOW_SECONDS = 15 * 60;
+
+type LoginAttempts = { count: number; firstAt: number };
+
+/**
+ * Stable, non-reversible key for a client. The raw IP is never stored — it is
+ * HMACed first, so the rate-limit records hold no personal data.
+ */
+function clientKey(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for') ?? '';
+  const ip = forwarded.split(',')[0]?.trim() || request.headers.get('x-real-ip') || 'unknown';
+  const digest = createHmac('sha256', sessionSecret() || 'login-limit')
+    .update(ip)
+    .digest('hex')
+    .slice(0, 32);
+  return nsKey('login_attempts', digest);
+}
+
+/** Throws 429 when this client has failed too many times recently. */
+export async function assertLoginAllowed(request: Request): Promise<void> {
+  let record: LoginAttempts | null = null;
+  try {
+    record = await getStore().get<LoginAttempts>(clientKey(request));
+  } catch {
+    // A store outage must never lock the operator out of their own dashboard.
+    return;
+  }
+  if (!record) return;
+
+  const ageSeconds = (Date.now() - record.firstAt) / 1000;
+  if (ageSeconds > LOGIN_WINDOW_SECONDS) return;
+  if (record.count < LOGIN_MAX_ATTEMPTS) return;
+
+  const retryAfter = Math.ceil(LOGIN_WINDOW_SECONDS - ageSeconds);
+  log.warn('security', 'Blocked a sign-in attempt from a rate-limited client.', { retryAfter });
+  throw new AppError(
+    'RATE_LIMITED',
+    `Too many failed sign-in attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).`,
+    429,
+  );
+}
+
+export async function recordLoginFailure(request: Request): Promise<void> {
+  try {
+    const key = clientKey(request);
+    const store = getStore();
+    const record = await store.get<LoginAttempts>(key);
+    const expired = !record || (Date.now() - record.firstAt) / 1000 > LOGIN_WINDOW_SECONDS;
+    await store.set<LoginAttempts>(
+      key,
+      expired ? { count: 1, firstAt: Date.now() } : { count: record.count + 1, firstAt: record.firstAt },
+    );
+  } catch {
+    /* best effort — never fail the request because the counter could not be written */
+  }
+}
+
+export async function clearLoginFailures(request: Request): Promise<void> {
+  try {
+    await getStore().del(clientKey(request));
+  } catch {
+    /* best effort */
   }
 }
 

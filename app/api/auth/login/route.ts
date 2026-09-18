@@ -14,7 +14,9 @@ import { log } from '@/lib/logger';
 import {
   ADMIN_COOKIE,
   adminAuthMisconfiguredError,
+  assertLoginAllowed,
   assertSameOrigin,
+  clearLoginFailures,
   createSessionToken,
   CSRF_COOKIE,
   csrfCookieOptions,
@@ -22,6 +24,7 @@ import {
   ok,
   parseJson,
   randomToken,
+  recordLoginFailure,
   safeEqual,
   sessionCookieOptions,
 } from '@/lib/security';
@@ -47,12 +50,17 @@ export async function POST(request: Request) {
       );
     }
 
+    // Refuse before reading the body once this client has failed too often.
+    await assertLoginAllowed(request);
+
     const { password } = await parseJson(request, bodySchema);
     if (!safeEqual(password, env().ADMIN_PASSWORD)) {
+      await recordLoginFailure(request);
       log.warn('auth', 'Failed admin sign-in attempt.');
       throw new AppError('UNAUTHORIZED', 'Incorrect password.', 401);
     }
 
+    await clearLoginFailures(request);
     const response = ok({ signedIn: true }, 'Signed in.');
     response.cookies.set(ADMIN_COOKIE, createSessionToken(), sessionCookieOptions());
     // Issue a fresh CSRF token alongside the new session so the very first

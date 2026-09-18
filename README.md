@@ -378,6 +378,12 @@ No code changes are required at any step.
   nothing on its own.
 - **Constant-time comparison** for the admin password, cron secret, CSRF token
   and OAuth state.
+- **Brute-force protection on sign-in** — 8 failed attempts from one client in
+  15 minutes and further attempts are refused with `429` until the window
+  passes. A correct password from a different client is unaffected. Counters
+  live in the shared store, so they are durable when Upstash is configured;
+  without it they are per-instance, which still bounds an attack but is weaker
+  — one more reason to configure `UPSTASH_REDIS_REST_*` in production.
 - **Cron authentication** on every `/api/cron/*` route, before any work.
 - **Input validation** — every request body parsed with Zod; URLs restricted to
   `http`/`https`; text sanitised and length-capped before storage.
@@ -567,8 +573,13 @@ State-changing admin requests need a same-origin `Origin` header and an
 automatically. Cron endpoints are exempt — use the `CRON_SECRET` bearer token.
 
 **Cron returns 401 / 503**
-`CRON_SECRET` is missing, or the header does not match. Check the variable in
-Vercel and redeploy.
+`401` means credentials were presented and rejected. `503` means `CRON_SECRET`
+is not configured at all, so the endpoints are disabled — neither ever runs a
+job. Set the variable in Vercel and redeploy.
+
+**Sign-in returns 429**
+Too many failed attempts from your network in the last 15 minutes. Wait for the
+window to pass; the limit clears itself, and a successful sign-in resets it.
 
 **Performance returns empty series**
 Normal for new or low-traffic profiles, and Google's data lags about two days.

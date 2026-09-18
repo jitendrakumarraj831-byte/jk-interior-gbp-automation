@@ -11,6 +11,8 @@
 
 import { z } from 'zod';
 
+import { redact } from './logger';
+
 export const BUSINESS = {
   name: 'JK Interior',
   website: 'https://www.jkinterior.online',
@@ -76,7 +78,8 @@ export function env(): Env {
   const parsed = envSchema.safeParse(process.env);
   if (!parsed.success) {
     // Defaults make this near-impossible, but never crash the whole app on it.
-    console.error('[config] Environment validation failed:', parsed.error.message);
+    // Routed through redact() so a validation message can never echo a value.
+    console.error('[config] Environment validation failed:', redact(parsed.error.message));
     cached = envSchema.parse({});
     return cached;
   }

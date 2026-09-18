@@ -15,6 +15,7 @@ export type AppErrorCode =
   | 'UNAUTHORIZED'
   | 'ADMIN_AUTH_NOT_CONFIGURED'
   | 'CSRF_FAILED'
+  | 'RATE_LIMITED'
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'STORE_ERROR'
