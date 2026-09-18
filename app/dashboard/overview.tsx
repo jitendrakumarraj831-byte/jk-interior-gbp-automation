@@ -65,6 +65,7 @@ type SettingsPayload = {
     aiProvidersConfigured: Record<string, boolean>;
     aiModels: Record<string, string>;
   };
+  gbpAccess: { status: string; message: string };
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -114,7 +115,12 @@ export default function DashboardOverview() {
         api.get<{ posts: GbpPost[] }>('/api/posts'),
       ]);
       setSummary(status.data);
-      setConfig(settings.data?.config ?? null);
+      // The checklist needs API access state alongside the config booleans.
+      setConfig(
+        settings.data
+          ? { ...settings.data.config, gbpAccess: settings.data.gbpAccess?.status }
+          : null,
+      );
       setPosts(postList.data?.posts ?? []);
       setError(null);
     } catch (caught) {

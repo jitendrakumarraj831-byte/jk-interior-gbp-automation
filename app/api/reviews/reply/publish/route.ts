@@ -11,7 +11,9 @@
 
 import { z } from 'zod';
 
+import { isMockModeActive } from '@/lib/config';
 import { AppError } from '@/lib/errors';
+import { isMockResourceName, simulatePublish } from '@/lib/gbp-mock';
 import { publishReviewReply } from '@/lib/google-business';
 import { getDraft, saveDraft } from '@/lib/repository';
 import { assertAdmin, handleRoute, ok, parseJson } from '@/lib/security';
@@ -42,8 +44,26 @@ export async function POST(request: Request) {
       throw new AppError('CONFLICT', 'Approve the draft before publishing it to Google.', 409);
     }
 
+    /*
+     * A mock draft is simulated and never leaves the server; a real draft goes
+     * to Google. The resource name decides, so the two paths cannot cross — and
+     * a mock draft is refused outright when mock mode is not active.
+     */
+    const simulated = isMockResourceName(draft.reviewName);
+    if (simulated && !isMockModeActive()) {
+      throw new AppError(
+        'CONFLICT',
+        'This draft belongs to a mock review and cannot be published to Google.',
+        409,
+      );
+    }
+
     try {
-      await publishReviewReply(draft.reviewName, draft.text);
+      if (simulated) {
+        simulatePublish(draft.reviewName);
+      } else {
+        await publishReviewReply(draft.reviewName, draft.text);
+      }
     } catch (error) {
       const message = error instanceof AppError ? error.message : 'Publishing failed.';
       await saveDraft({ ...draft, status: 'publish_failed', error: message });
@@ -57,6 +77,9 @@ export async function POST(request: Request) {
       error: undefined,
     });
 
-    return ok({ draft: saved }, 'Reply published to Google.');
+    return ok(
+      { draft: saved },
+      simulated ? 'Mock reply published (simulated — nothing sent to Google).' : 'Reply published to Google.',
+    );
   });
 }

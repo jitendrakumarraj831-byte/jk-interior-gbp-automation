@@ -11,7 +11,14 @@
  */
 
 import { generateReplyDraft } from './ai-reply';
-import { env, isAiConfigured } from './config';
+import { env, isAiConfigured, isMockModeActive } from './config';
+import { recordAccessFailure, shouldSkipGoogleCalls } from './gbp-access';
+import {
+  isMockResourceName,
+  mockReviewsResult,
+  simulatePostPublish,
+  simulatePublish,
+} from './gbp-mock';
 import { resolveTarget } from './connection';
 import { AppError } from './errors';
 import { createLocalPost, fetchPerformance, listReviews, publishReviewReply } from './google-business';
@@ -31,6 +38,35 @@ import {
 import type { AutomationRun, AutomationRunName, ReplyDraft, Review } from './types';
 
 type TaskResult = Omit<AutomationRun, 'task' | 'startedAt' | 'finishedAt'>;
+
+/**
+ * Result used when Business Profile API access is still pending.
+ *
+ * Reported as ok:true deliberately — a skipped job is the system behaving
+ * correctly while it waits for Google, not a failure. Marking it failed would
+ * make the whole automation page look broken for weeks.
+ */
+function skippedForPendingAccess(): TaskResult {
+  return {
+    ok: true,
+    summary: 'Skipped — Google Business Profile API access is pending approval.',
+    details: { status: 'skipped', reason: 'gbp_access_pending' },
+  };
+}
+
+/**
+ * True when this task should not call Google at all right now.
+ * Mock mode never skips: it makes no Google calls in the first place.
+ */
+async function shouldSkipGbpWork(): Promise<boolean> {
+  if (isMockModeActive()) return false;
+  return shouldSkipGoogleCalls();
+}
+
+/** Caches a classified failure so the next cron run can skip early. */
+async function noteGoogleFailure(error: unknown): Promise<void> {
+  if (error instanceof AppError) await recordAccessFailure(error.code);
+}
 
 /** Runs a task, records the outcome, and never lets it throw past the caller. */
 async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): Promise<AutomationRun> {
@@ -79,9 +115,36 @@ export function applyDraftStatus(reviews: Review[], drafts: ReplyDraft[]): Revie
 
 export async function syncReviews(): Promise<AutomationRun> {
   return runTask('sync-reviews', async (): Promise<TaskResult> => {
-    const target = await resolveTarget();
-    const result = await listReviews(target.locationPath);
+    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+
     const drafts = await listDrafts();
+
+    // Mock mode serves simulated reviews and never touches Google.
+    if (isMockModeActive()) {
+      const mock = mockReviewsResult();
+      await setCachedReviews({
+        reviews: applyDraftStatus(mock.reviews, drafts),
+        averageRating: mock.averageRating,
+        totalReviewCount: mock.totalReviewCount,
+        fetchedAt: new Date().toISOString(),
+        locationPath: 'mock',
+      });
+      return {
+        ok: true,
+        summary: `Synced ${mock.reviews.length} mock reviews (no Google call).`,
+        details: { fetched: mock.reviews.length, source: 'mock' },
+      };
+    }
+
+    let target;
+    let result;
+    try {
+      target = await resolveTarget();
+      result = await listReviews(target.locationPath);
+    } catch (error) {
+      await noteGoogleFailure(error);
+      throw error;
+    }
 
     await setCachedReviews({
       reviews: applyDraftStatus(result.reviews, drafts),
@@ -120,8 +183,20 @@ export async function generateDrafts(): Promise<AutomationRun> {
       return { ok: true, summary: 'Automatic draft generation is turned off in Settings.' };
     }
 
-    const target = await resolveTarget();
-    const { reviews } = await listReviews(target.locationPath, { maxPages: 2 });
+    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+
+    let reviews;
+    if (isMockModeActive()) {
+      reviews = mockReviewsResult().reviews;
+    } else {
+      try {
+        const target = await resolveTarget();
+        ({ reviews } = await listReviews(target.locationPath, { maxPages: 2 }));
+      } catch (error) {
+        await noteGoogleFailure(error);
+        throw error;
+      }
+    }
 
     const candidates = reviews.filter(
       (review) => !review.existingReply && review.starRating >= settings.autoDraftMinStars,
@@ -206,7 +281,20 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
 
     for (const draft of drafts) {
       try {
-        await publishReviewReply(draft.reviewName, draft.text);
+        // A mock review is simulated; a real one goes to Google. The two can
+        // never cross: the name decides, and mock names are never real.
+        if (isMockResourceName(draft.reviewName)) {
+          if (!isMockModeActive()) {
+            throw new AppError(
+              'CONFLICT',
+              'This draft belongs to a mock review and cannot be published to Google.',
+              409,
+            );
+          }
+          simulatePublish(draft.reviewName);
+        } else {
+          await publishReviewReply(draft.reviewName, draft.text);
+        }
         await saveDraft({
           ...draft,
           status: 'published',
@@ -236,19 +324,33 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
 
 export async function publishScheduledPosts(): Promise<AutomationRun> {
   return runTask('publish-posts', async (): Promise<TaskResult> => {
+    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+
     const due = await listDuePosts();
     if (due.length === 0) {
       return { ok: true, summary: 'No scheduled posts were due.', details: { due: 0 } };
     }
 
-    const target = await resolveTarget();
+    const mock = isMockModeActive();
+    // In mock mode the target is never resolved, so no Google call can occur.
+    let target = null;
+    if (!mock) {
+      try {
+        target = await resolveTarget();
+      } catch (error) {
+        await noteGoogleFailure(error);
+        throw error;
+      }
+    }
     let published = 0;
     let failed = 0;
 
     for (const post of due) {
       await savePost({ ...post, status: 'publishing' });
       try {
-        const googlePostName = await createLocalPost(target.locationPath, post);
+        const googlePostName = mock
+          ? simulatePostPublish(post.id)
+          : await createLocalPost(target!.locationPath, post);
         await savePost({
           ...post,
           status: 'published',
@@ -280,8 +382,23 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
 
 export async function syncPerformance(days = 30): Promise<AutomationRun> {
   return runTask('sync-performance', async (): Promise<TaskResult> => {
-    const target = await resolveTarget();
-    const snapshot = await fetchPerformance(target.locationName, { days });
+    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+    if (isMockModeActive()) {
+      return {
+        ok: true,
+        summary: 'Skipped — performance data is not simulated in mock mode.',
+        details: { status: 'skipped', reason: 'mock_mode' },
+      };
+    }
+
+    let snapshot;
+    try {
+      const target = await resolveTarget();
+      snapshot = await fetchPerformance(target.locationName, { days });
+    } catch (error) {
+      await noteGoogleFailure(error);
+      throw error;
+    }
     await setCachedPerformance(snapshot);
 
     const interactions = snapshot.series

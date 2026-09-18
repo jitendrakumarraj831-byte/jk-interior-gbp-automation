@@ -56,6 +56,7 @@ type Payload = {
   };
   warnings: string[];
   business: { name: string; website: string; services: string[] };
+  gbpAccess: { status: string; message: string; checkedAt: string };
 };
 
 function Toggle({
@@ -117,6 +118,16 @@ function ConfigRow({ label, ready, note }: { label: string; ready: boolean; note
     </li>
   );
 }
+
+const GBP_ACCESS_LABELS: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
+  available: { label: 'Approved', tone: 'success' },
+  pending: { label: 'Pending approval', tone: 'warning' },
+  rate_limited: { label: 'Rate limited', tone: 'warning' },
+  auth_error: { label: 'Authentication error', tone: 'danger' },
+  permission_error: { label: 'Permission error', tone: 'danger' },
+  error: { label: 'Error', tone: 'danger' },
+  unknown: { label: 'Not checked yet', tone: 'neutral' },
+};
 
 const PROVIDER_LABELS: Record<string, string> = {
   groq: 'Groq',
@@ -312,6 +323,61 @@ export default function SettingsClient() {
                 switches.
               </p>
             ) : null}
+          </Card>
+
+          <Card>
+            <SectionHeader
+              title="Google Business Profile"
+              description="Account link and API access are tracked separately"
+              icon={<ShieldIcon size={18} />}
+              tone="brand"
+            />
+            <dl className="divide-y divide-line">
+              {[
+                {
+                  term: 'Google OAuth',
+                  value: payload.config.oauthConfigured ? 'Configured' : 'Not configured',
+                  tone: payload.config.oauthConfigured ? ('success' as const) : ('warning' as const),
+                },
+                {
+                  term: 'Google account',
+                  value: payload.config.googleConfigured ? 'Connected' : 'Not connected',
+                  tone: payload.config.googleConfigured ? ('success' as const) : ('neutral' as const),
+                },
+                {
+                  term: 'GBP API access',
+                  value: (GBP_ACCESS_LABELS[payload.gbpAccess.status] ?? GBP_ACCESS_LABELS.unknown!)
+                    .label,
+                  tone: (GBP_ACCESS_LABELS[payload.gbpAccess.status] ?? GBP_ACCESS_LABELS.unknown!)
+                    .tone,
+                },
+                {
+                  term: 'Location',
+                  value:
+                    payload.gbpAccess.status === 'available'
+                      ? payload.config.pinnedLocation
+                        ? 'Pinned by environment'
+                        : 'Auto-detected'
+                      : 'Waiting for API access',
+                  tone: 'neutral' as const,
+                },
+              ].map((row) => (
+                <div
+                  key={row.term}
+                  className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
+                >
+                  <dt className="text-[0.875rem] text-ink-700">{row.term}</dt>
+                  <dd>
+                    <Badge tone={row.tone} dot>
+                      {row.value}
+                    </Badge>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-3 border-t border-line pt-3 text-xs leading-relaxed text-ink-500">
+              {payload.gbpAccess.message}
+            </p>
           </Card>
 
           <Card>

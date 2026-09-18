@@ -9,6 +9,7 @@
 import { z } from 'zod';
 
 import { configSummary, configWarnings, SERVICES, BUSINESS } from '@/lib/config';
+import { describeAccess, readAccess } from '@/lib/gbp-access';
 import { getRefreshToken } from '@/lib/google-auth';
 import { getSettings, saveSettings } from '@/lib/repository';
 import { assertAdmin, handleRoute, ok, parseJson } from '@/lib/security';
@@ -28,11 +29,18 @@ export async function GET(request: Request) {
   return handleRoute('settings', async () => {
     assertAdmin(request);
     const refreshToken = await getRefreshToken().catch(() => null);
+    // Read from the cached access record — this must not trigger a Google call.
+    const access = await readAccess();
     return ok({
       settings: await getSettings(),
       config: configSummary(refreshToken),
       warnings: configWarnings(refreshToken),
       business: { ...BUSINESS, services: SERVICES },
+      gbpAccess: {
+        status: access.status,
+        message: describeAccess(access.status),
+        checkedAt: access.checkedAt,
+      },
     });
   });
 }

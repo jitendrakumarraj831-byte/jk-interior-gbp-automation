@@ -8,6 +8,8 @@
  */
 
 import { AppError, isApprovalPending } from '@/lib/errors';
+import { isMockModeActive } from '@/lib/config';
+import { mockReviewsResult } from '@/lib/gbp-mock';
 import { resolveTarget } from '@/lib/connection';
 import { listReviews } from '@/lib/google-business';
 import { getCachedReviews, listDrafts, setCachedReviews } from '@/lib/repository';
@@ -31,6 +33,20 @@ export async function GET(request: Request) {
     assertAdmin(request);
 
     const drafts = await listDrafts();
+
+    // Mock mode replaces the review source entirely — the real branch below is
+    // not reachable, so simulated and real records can never appear together.
+    if (isMockModeActive()) {
+      const mock = mockReviewsResult();
+      const payload: ReviewsPayload = {
+        reviews: applyDraftStatus(mock.reviews, drafts),
+        averageRating: mock.averageRating,
+        totalReviewCount: mock.totalReviewCount,
+        source: 'google',
+        fetchedAt: new Date().toISOString(),
+      };
+      return ok(payload, `Mock mode — showing ${mock.reviews.length} simulated reviews.`);
+    }
 
     try {
       const target = await resolveTarget();

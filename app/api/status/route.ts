@@ -8,7 +8,10 @@
 
 import { configWarnings } from '@/lib/config';
 import { resolveTarget } from '@/lib/connection';
-import { AppError, isApprovalPending } from '@/lib/errors';
+import { isMockModeActive } from '@/lib/config';
+import { AppError } from '@/lib/errors';
+import { describeAccess, recordAccessFailure, shouldSkipGoogleCalls } from '@/lib/gbp-access';
+import { mockReviewsResult } from '@/lib/gbp-mock';
 import { listReviews } from '@/lib/google-business';
 import { getRefreshToken } from '@/lib/google-auth';
 import {
@@ -50,9 +53,31 @@ export async function GET(request: Request) {
     let connectionDetail = 'Connect a Google account to start pulling reviews.';
     let connected = false;
 
-    if (!refreshToken) {
+    if (isMockModeActive()) {
+      const mock = mockReviewsResult();
+      reviews = applyDraftStatus(mock.reviews, drafts);
+      averageRating = mock.averageRating;
+      totalReviews = mock.totalReviewCount;
+      connected = true;
+      connectionLabel = 'Mock mode';
+      connectionDetail = 'Simulated Business Profile — nothing reaches Google.';
+    } else if (!refreshToken) {
       connectionLabel = 'Not connected';
       connectionDetail = 'No Google account is linked yet.';
+    } else if (await shouldSkipGoogleCalls()) {
+      /*
+       * API access is known to be pending and still inside its cooldown, so no
+       * Google call is made. The ACCOUNT is linked, so this reports pending —
+       * never "not connected".
+       */
+      const cached = await getCachedReviews();
+      if (cached) {
+        reviews = applyDraftStatus(cached.reviews, drafts);
+        averageRating = cached.averageRating;
+        totalReviews = cached.totalReviewCount;
+      }
+      connectionLabel = 'Approval pending';
+      connectionDetail = describeAccess('pending');
     } else {
       try {
         const target = await resolveTarget();
@@ -70,9 +95,14 @@ export async function GET(request: Request) {
           averageRating = cached.averageRating;
           totalReviews = cached.totalReviewCount;
         }
-        if (error instanceof AppError && isApprovalPending(error.code)) {
+        const code = error instanceof AppError ? error.code : 'GOOGLE_API_ERROR';
+        const status = await recordAccessFailure(code);
+        if (status === 'pending') {
           connectionLabel = 'Approval pending';
-          connectionDetail = 'Google Business Profile API approval pending.';
+          connectionDetail = describeAccess('pending');
+        } else if (status === 'rate_limited') {
+          connectionLabel = 'Rate limited';
+          connectionDetail = describeAccess('rate_limited');
         } else {
           connectionLabel = 'Connection problem';
           connectionDetail =

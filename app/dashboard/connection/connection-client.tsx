@@ -47,25 +47,42 @@ type ConnState =
   | 'configuration_required'
   | 'connected'
   | 'approval_pending'
+  | 'rate_limited'
   | 'connection_error';
 
 const STATE_META: Record<ConnState, { label: string; tone: Tone }> = {
   connected: { label: 'Connected', tone: 'google' },
   approval_pending: { label: 'Approval pending', tone: 'warning' },
+  rate_limited: { label: 'Rate limited', tone: 'warning' },
   configuration_required: { label: 'Configuration required', tone: 'neutral' },
   connection_error: { label: 'Connection error', tone: 'danger' },
   not_connected: { label: 'Not connected', tone: 'neutral' },
 };
 
+/**
+ * The account and the API are two separate things. A linked account whose API
+ * access is still pending must never read as "disconnected" — that is the whole
+ * point of this mapping.
+ */
 function resolveState(state: ConnectionState, oauthReady: boolean): ConnState {
   if (!oauthReady) return 'configuration_required';
-  if (state.connected) return 'connected';
-  if (state.lastError) {
-    return state.lastError.toLowerCase().includes('approval pending')
-      ? 'approval_pending'
-      : 'connection_error';
+  if (!state.oauthConnected) {
+    return state.apiAccess === 'auth_error' ? 'connection_error' : 'not_connected';
   }
-  return 'not_connected';
+  switch (state.apiAccess) {
+    case 'available':
+      return 'connected';
+    case 'pending':
+      return 'approval_pending';
+    case 'rate_limited':
+      return 'rate_limited';
+    case 'auth_error':
+    case 'permission_error':
+    case 'error':
+      return 'connection_error';
+    default:
+      return state.connected ? 'connected' : 'approval_pending';
+  }
 }
 
 export default function ConnectionClient({
@@ -214,36 +231,51 @@ export default function ConnectionClient({
                   <GoogleIcon size={24} />
                 </span>
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base font-semibold text-ink-950">Google Business Profile</h2>
-                    <StatusPill tone={meta.tone} pulse={connState === 'connected'}>
-                      {meta.label}
-                    </StatusPill>
-                  </div>
-                  <p className="mt-1.5 max-w-lg text-sm leading-relaxed text-ink-600">
-                    {connState === 'connected'
-                      ? 'Reviews, posts and performance are syncing from your profile.'
-                      : connState === 'approval_pending'
-                        ? 'Your credentials are stored and valid. Google has not yet approved API access for this project.'
-                        : connState === 'configuration_required'
-                          ? 'Add your Google OAuth credentials to the environment, then redeploy before connecting.'
-                          : connState === 'connection_error'
-                            ? 'We reached Google but the request was refused. The details are below.'
-                            : 'No Google account is linked yet.'}
+                  <h2 className="text-base font-semibold text-ink-950">Google Business Profile</h2>
+
+                  {/* Account and API access reported separately. */}
+                  <dl className="mt-2.5 flex flex-wrap gap-x-6 gap-y-2">
+                    <div>
+                      <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                        Google account
+                      </dt>
+                      <dd className="mt-1">
+                        <StatusPill tone={state.oauthConnected ? 'google' : 'neutral'} pulse={state.oauthConnected}>
+                          {state.oauthConnected ? 'Connected' : 'Not connected'}
+                        </StatusPill>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
+                        Business Profile API
+                      </dt>
+                      <dd className="mt-1">
+                        <StatusPill tone={meta.tone} pulse={connState === 'connected'}>
+                          {connState === 'approval_pending' ? 'Approval pending' : meta.label}
+                        </StatusPill>
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-ink-600">
+                    {state.apiAccessMessage}
                   </p>
                 </div>
               </div>
 
               <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-                <ButtonLink
-                  href="/api/auth/google"
-                  external
-                  disabled={!oauthReady}
-                  icon={<GoogleIcon size={17} />}
-                  className="flex-1 sm:flex-none"
-                >
-                  {state.hasRefreshToken ? 'Reconnect' : 'Connect Google'}
-                </ButtonLink>
+                {/* Pending access is not an OAuth problem, so no reconnect prompt. */}
+                {connState === 'approval_pending' ? null : (
+                  <ButtonLink
+                    href="/api/auth/google"
+                    external
+                    disabled={!oauthReady}
+                    icon={<GoogleIcon size={17} />}
+                    className="flex-1 sm:flex-none"
+                  >
+                    {state.hasRefreshToken ? 'Reconnect' : 'Connect Google'}
+                  </ButtonLink>
+                )}
                 {state.hasRefreshToken ? (
                   <Button
                     variant="secondary"
@@ -308,7 +340,13 @@ export default function ConnectionClient({
                   (state.accounts[0]?.accountName || 'Not available')
                 }
               />
-              <Fact label="Location" value={selectedLocation?.title ?? 'Not selected'} />
+              <Fact
+                label="Location"
+                value={
+                  selectedLocation?.title ??
+                  (connState === 'approval_pending' ? 'Waiting for API access' : 'Not selected')
+                }
+              />
               <Fact
                 label="Last sync"
                 value={state.connectedAt ? relativeTime(state.connectedAt) : 'Never'}
@@ -343,7 +381,7 @@ export default function ConnectionClient({
                 title="No locations available yet"
                 description={
                   connState === 'approval_pending'
-                    ? 'Your locations will list here as soon as Google approves API access for this project.'
+                    ? 'Waiting for API access. Your locations will list here automatically as soon as Google approves this project — no action needed.'
                     : 'Connect the Google account that manages your Business Profile and your locations will appear here.'
                 }
               />

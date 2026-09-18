@@ -1,5 +1,9 @@
 /** Shared domain types. Kept free of secrets so they can cross to the client. */
 
+import type { GbpAccessStatus } from './gbp-access';
+
+export type { GbpAccessStatus };
+
 export type ApiStatus = 'ok' | 'pending_approval' | 'not_connected' | 'error';
 
 /** Normalised envelope every dashboard API returns. */
@@ -37,6 +41,12 @@ export type Review = {
   /** Reply already live on Google, if any. */
   existingReply?: { comment: string; updateTime: string } | null;
   replyStatus: ReplyStatus;
+  /**
+   * Where this record came from. Absent or 'google' means a real review.
+   * 'mock' records exist only while GBP_MOCK_MODE is active and never mix with
+   * real ones — the two are served by mutually exclusive code paths.
+   */
+  source?: 'google' | 'mock';
 };
 
 export type ReplyDraft = {
@@ -148,7 +158,18 @@ export type GbpLocation = {
 };
 
 export type ConnectionState = {
+  /**
+   * True when Google answered a Business Profile call. Kept for compatibility;
+   * prefer `oauthConnected` + `apiAccess`, which separate "is the account
+   * linked" from "is API access granted yet".
+   */
   connected: boolean;
+  /** The Google account is linked and its refresh token still works. */
+  oauthConnected: boolean;
+  /** Business Profile API access state — pending, available, or a fault. */
+  apiAccess: GbpAccessStatus;
+  /** Plain-language explanation of apiAccess. Never a raw Google payload. */
+  apiAccessMessage: string;
   /** True once we have a usable refresh token. */
   hasRefreshToken: boolean;
   connectedAt?: string;

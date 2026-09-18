@@ -6,9 +6,18 @@
  * location Google returns.
  */
 
-import { isOAuthConfigured } from './config';
+import { isMockModeActive, isOAuthConfigured } from './config';
 import { AppError } from './errors';
-import { getConnectionMeta, getRefreshToken } from './google-auth';
+import {
+  describeAccess,
+  readAccess,
+  recordAccessAvailable,
+  recordAccessFailure,
+  shouldSkipGoogleCalls,
+  type GbpAccessStatus,
+} from './gbp-access';
+import { getAccessToken, getConnectionMeta, getRefreshToken } from './google-auth';
+import { MOCK_LOCATION_PATH } from './gbp-mock';
 import { buildLocationPath, listAccounts, listLocations, pinnedTarget } from './google-business';
 import { getSettings } from './repository';
 import type { ConnectionState } from './types';
@@ -82,9 +91,13 @@ export async function getConnectionState(): Promise<ConnectionState> {
   const meta = await getConnectionMeta();
   const settings = await getSettings();
   const pinned = pinnedTarget();
+  const cached = await readAccess();
 
   const state: ConnectionState = {
     connected: false,
+    oauthConnected: false,
+    apiAccess: cached.status,
+    apiAccessMessage: describeAccess(cached.status),
     hasRefreshToken: Boolean(refreshToken),
     connectedAt: meta?.connectedAt,
     googleAccountEmail: meta?.googleAccountEmail,
@@ -94,8 +107,55 @@ export async function getConnectionState(): Promise<ConnectionState> {
     selectedLocation: pinned?.location ?? settings.selectedLocation,
   };
 
+  // Mock mode stands in for the whole Business Profile, including its identity.
+  if (isMockModeActive()) {
+    return {
+      ...state,
+      connected: true,
+      oauthConnected: true,
+      apiAccess: 'available',
+      apiAccessMessage: 'Mock Business Profile — simulated data, nothing reaches Google.',
+      accounts: [{ name: 'mock/accounts/jk-interior', accountName: 'JK Interior (mock)' }],
+      locations: [{ name: MOCK_LOCATION_PATH, title: 'JK Interior — Forbesganj (mock)' }],
+      selectedAccount: 'mock/accounts/jk-interior',
+      selectedLocation: MOCK_LOCATION_PATH,
+    };
+  }
+
   if (!isOAuthConfigured() || !refreshToken) return state;
 
+  /*
+   * Step 1 — is the ACCOUNT linked? Refreshing the access token hits Google's
+   * OAuth endpoint, which is unaffected by Business Profile quota. This is what
+   * lets a connected account stay "connected" while API access is at 0 QPM.
+   */
+  try {
+    await getAccessToken();
+    state.oauthConnected = true;
+  } catch (error) {
+    const code = error instanceof AppError ? error.code : 'GOOGLE_API_ERROR';
+    state.apiAccess = await recordAccessFailure(code);
+    state.apiAccessMessage = describeAccess(state.apiAccess);
+    state.lastError =
+      error instanceof AppError ? error.message : 'Unexpected error contacting Google.';
+    return state;
+  }
+
+  /*
+   * Step 2 — is API ACCESS granted?
+   *
+   * While a pending result is inside its cooldown the call is skipped entirely:
+   * every dashboard load would otherwise re-ask an endpoint known to be closed.
+   * The cooldown expires on its own, so approval is picked up without any
+   * manual step.
+   */
+  if (await shouldSkipGoogleCalls()) {
+    state.apiAccess = 'pending';
+    state.apiAccessMessage = describeAccess('pending');
+    return state;
+  }
+
+  // A failure here never un-links the account and never touches the refresh token.
   try {
     const accounts = await listAccounts();
     state.accounts = accounts;
@@ -105,11 +165,21 @@ export async function getConnectionState(): Promise<ConnectionState> {
       state.selectedAccount = accountName;
       state.selectedLocation = state.selectedLocation ?? state.locations[0]?.name;
     }
-    // Reaching here means Google actually answered — that is a real connection.
     state.connected = true;
+    state.apiAccess = 'available';
+    state.apiAccessMessage = describeAccess('available');
+    await recordAccessAvailable();
   } catch (error) {
-    state.lastError =
-      error instanceof AppError ? error.message : 'Unexpected error contacting Google.';
+    const code = error instanceof AppError ? error.code : 'GOOGLE_API_ERROR';
+    const status: GbpAccessStatus = await recordAccessFailure(code);
+    state.apiAccess = status;
+    state.apiAccessMessage = describeAccess(status);
+    // Only a genuine fault is surfaced as an error; "pending" is an expected
+    // waiting state, not something the operator can act on.
+    if (status !== 'pending') {
+      state.lastError =
+        error instanceof AppError ? error.message : 'Unexpected error contacting Google.';
+    }
   }
 
   return state;

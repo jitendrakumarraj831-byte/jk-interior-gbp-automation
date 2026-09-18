@@ -5,6 +5,7 @@ export type AppErrorCode =
   | 'NOT_CONNECTED'
   | 'GBP_API_NOT_ENABLED'
   | 'GBP_QUOTA_EXCEEDED'
+  | 'GBP_RATE_LIMITED'
   | 'GBP_FORBIDDEN'
   | 'GBP_NOT_FOUND'
   | 'GOOGLE_AUTH_FAILED'
@@ -91,7 +92,12 @@ export function classifyGoogleError(httpStatus: number, body: unknown): AppError
   }
 
   if (httpStatus === 429) {
-    return new AppError('GBP_QUOTA_EXCEEDED', 'Google Business Profile API rate limit hit.', 503);
+    // A real throttle, not the 0 QPM that signals access is still pending.
+    return new AppError(
+      'GBP_RATE_LIMITED',
+      'Google is rate limiting requests right now. This is temporary.',
+      503,
+    );
   }
 
   return new AppError(

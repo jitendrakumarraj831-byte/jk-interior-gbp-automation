@@ -87,6 +87,12 @@ const envSchema = z.object({
   GBP_ACCOUNT_NAME: z.string().trim().default(''),
   GBP_LOCATION_NAME: z.string().trim().default(''),
 
+  GBP_MOCK_MODE: z
+    .string()
+    .trim()
+    .default('false')
+    .transform((v) => v.toLowerCase() === 'true'),
+
   AUTO_PUBLISH_REPLIES: z
     .string()
     .trim()
@@ -221,6 +227,30 @@ export function isDurableStoreConfigured(): boolean {
   return Boolean(e.UPSTASH_REDIS_REST_URL && e.UPSTASH_REDIS_REST_TOKEN);
 }
 
+/**
+ * Whether the safe mock Business Profile is active.
+ *
+ * Deliberately impossible to switch on for the production deployment: the flag
+ * is ANDed with "this is not the production environment". On Vercel that means
+ * local development and preview deployments can mock, and the production
+ * deployment cannot — there is no override, because an override is exactly how
+ * a mock ends up live by accident.
+ *
+ * NODE_ENV is 'production' for Vercel preview builds too, so VERCEL_ENV is the
+ * signal that actually distinguishes a preview from production.
+ */
+export function isMockModeActive(): boolean {
+  const e = env();
+  if (!e.GBP_MOCK_MODE) return false;
+  if (e.VERCEL_ENV) return e.VERCEL_ENV !== 'production';
+  return e.NODE_ENV !== 'production';
+}
+
+/** True when the flag is set but the environment refuses to honour it. */
+export function isMockModeBlocked(): boolean {
+  return env().GBP_MOCK_MODE && !isMockModeActive();
+}
+
 export function isProduction(): boolean {
   const e = env();
   return e.VERCEL_ENV === 'production' || e.NODE_ENV === 'production';
@@ -260,6 +290,10 @@ export type ConfigSummary = {
   adminAuthMode: AdminAuthMode;
   durableStore: boolean;
   autoPublishReplies: boolean;
+  /** Safe mock Business Profile — never true on the production deployment. */
+  mockMode: boolean;
+  /** Flag set but refused because this is production. */
+  mockModeBlocked: boolean;
   pinnedLocation: boolean;
   environment: string;
 };
@@ -283,6 +317,8 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
     adminAuthMode: adminAuthMode(),
     durableStore: isDurableStoreConfigured(),
     autoPublishReplies: e.AUTO_PUBLISH_REPLIES,
+    mockMode: isMockModeActive(),
+    mockModeBlocked: isMockModeBlocked(),
     pinnedLocation: Boolean(e.GBP_LOCATION_NAME),
     environment: e.VERCEL_ENV || e.NODE_ENV,
   };
@@ -324,6 +360,16 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
   if (!isDurableStoreConfigured()) {
     warnings.push(
       'No durable store configured (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN). Drafts and posts are kept in memory only and are lost on cold start.',
+    );
+  }
+  if (isMockModeActive()) {
+    warnings.push(
+      'Mock Business Profile mode is ON. Reviews and publishing are simulated — nothing reaches Google.',
+    );
+  }
+  if (isMockModeBlocked()) {
+    warnings.push(
+      'GBP_MOCK_MODE is set but ignored: mock mode cannot run on the production deployment.',
     );
   }
   if (e.AUTO_PUBLISH_REPLIES) {

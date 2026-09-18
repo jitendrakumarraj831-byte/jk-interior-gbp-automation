@@ -5,6 +5,8 @@
  * leaves the post in `failed`.
  */
 
+import { isMockModeActive } from '@/lib/config';
+import { simulatePostPublish } from '@/lib/gbp-mock';
 import { resolveTarget } from '@/lib/connection';
 import { AppError } from '@/lib/errors';
 import { createLocalPost } from '@/lib/google-business';
@@ -30,8 +32,10 @@ export async function POST(request: Request, context: Context) {
     await savePost({ ...post, status: 'publishing' });
 
     try {
-      const target = await resolveTarget();
-      const googlePostName = await createLocalPost(target.locationPath, post);
+      // Mock mode simulates the publish; no Google call is made at all.
+      const googlePostName = isMockModeActive()
+        ? simulatePostPublish(post.id)
+        : await createLocalPost((await resolveTarget()).locationPath, post);
       const saved = await savePost({
         ...post,
         status: 'published',

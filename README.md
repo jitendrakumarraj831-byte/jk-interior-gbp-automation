@@ -50,6 +50,39 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | Admin dashboard (light, mobile-first) | Built — password required in production |
 | Health / status monitoring | Built — `/api/health` works today |
 
+### While Business Profile API access is pending
+
+Google keeps a project at **0 requests per minute** until it approves the
+Business Profile API request, so every GBP call returns 403 even though OAuth is
+completely healthy. The app treats those as two separate things:
+
+| | Meaning |
+| --- | --- |
+| **Google account** | The refresh token works. Proven by refreshing the access token, which is unaffected by GBP quota. |
+| **Business Profile API** | `available`, `pending`, `rate_limited`, `auth_error`, `permission_error` or `error`. |
+
+A pending result is cached through the existing store with a **6-hour cooldown**,
+so cron and the dashboard stop re-asking an endpoint that is known to be closed.
+GBP-dependent cron jobs then record `status: skipped`, `reason:
+gbp_access_pending` and still return a healthy response — a skipped job is the
+system waiting correctly, not a failure. The refresh token is never deleted and
+the account is never marked disconnected. When Google approves and quota opens,
+the cooldown lapses and normal operation resumes with no manual step.
+
+### Safe mock mode
+
+`GBP_MOCK_MODE=true` serves three simulated reviews (Hinglish 5★, English 4★,
+English 2★) and simulates publishing, so the whole workflow — review → AI draft
+→ approval → publish — can be exercised now.
+
+- **AI is not mocked.** Drafts come from the real provider router.
+- **Nothing reaches Google.** Mock records use `mock/` resource names and
+  `source: 'mock'`, and the publish paths refuse to send a `mock/` name to
+  Google. Mock and real reviews are served by mutually exclusive branches.
+- **It cannot run in production.** The flag is ignored whenever `VERCEL_ENV` is
+  `production`. There is no override — an override is how a mock ends up live.
+  Use it locally or on a preview deployment.
+
 ### AI providers and automatic fallback
 
 Reply drafting goes through a router (`lib/ai/router.ts`) that tries providers in
@@ -162,6 +195,7 @@ Copy `.env.example` → `.env.local`. **Never commit `.env.local`.**
 | `GBP_ACCOUNT_NAME` | auto-detected | Pin the account, e.g. `accounts/1234567890` |
 | `GBP_LOCATION_NAME` | auto-detected | Pin the location, e.g. `locations/1234567890` |
 | `AUTO_PUBLISH_REPLIES` | `false` | Keep this `false`. |
+| `GBP_MOCK_MODE` | `false` | Simulated Business Profile for testing. Ignored on the production deployment. |
 
 Generate the two random secrets with:
 

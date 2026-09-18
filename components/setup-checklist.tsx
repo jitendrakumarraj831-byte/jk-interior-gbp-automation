@@ -18,6 +18,8 @@ export type SetupConfig = {
   durableStore: boolean;
   aiProviderOrder?: string[];
   aiProvidersConfigured?: Record<string, boolean>;
+  /** Business Profile API access state, tracked separately from OAuth. */
+  gbpAccess?: string;
 };
 
 type Step = {
@@ -49,19 +51,57 @@ function describeProviders(config: SetupConfig): string {
   return `${primary} is, with ${rest.join(' and ')} as fallback,`;
 }
 
+/** Status chip for the Google step. Pending is never "not configured". */
+function googleStatus(config: SetupConfig): string {
+  if (!config.oauthConfigured) return 'Not configured';
+  if (!config.googleConfigured) return 'Not connected';
+  switch (config.gbpAccess) {
+    case 'available':
+      return 'Connected';
+    case 'auth_error':
+      return 'Reconnect needed';
+    case 'permission_error':
+      return 'Permission error';
+    case 'rate_limited':
+      return 'Rate limited';
+    default:
+      return 'Pending';
+  }
+}
+
+function googleDescription(config: SetupConfig): string {
+  if (!config.oauthConfigured) {
+    return 'Add your Google OAuth credentials, then connect your Business Profile.';
+  }
+  if (!config.googleConfigured) {
+    return 'OAuth credentials are set. Connect the Google account that manages your profile.';
+  }
+  switch (config.gbpAccess) {
+    case 'available':
+      return 'Your Google account is linked and syncing reviews, posts and performance.';
+    case 'auth_error':
+      return 'Google rejected the stored credentials. Reconnect the account to resume syncing.';
+    case 'permission_error':
+      return 'The connected account does not manage this Business Profile.';
+    default:
+      return 'Google account is connected. Waiting for Business Profile API access approval.';
+  }
+}
+
 export function buildSteps(config: SetupConfig): Step[] {
   return [
     {
       key: 'google',
       icon: <GoogleIcon size={18} />,
       title: 'Google Business Profile',
-      description: config.googleConfigured
-        ? 'Your Google account is linked and ready to sync reviews and posts.'
-        : config.oauthConfigured
-          ? 'OAuth credentials are set. Connect the Google account that manages your profile.'
-          : 'Add your Google OAuth credentials, then connect your Business Profile.',
-      done: config.googleConfigured,
-      status: config.googleConfigured ? 'Connected' : config.oauthConfigured ? 'Pending' : 'Not configured',
+      description: googleDescription(config),
+      /*
+       * A linked account whose API access is still under review counts as done:
+       * there is no action left for the operator, and showing it as an
+       * outstanding task would misread a Google-side wait as a setup failure.
+       */
+      done: config.googleConfigured && config.gbpAccess !== 'auth_error',
+      status: googleStatus(config),
       tone: config.oauthConfigured ? 'warning' : 'neutral',
       href: '/dashboard/connection',
       cta: config.oauthConfigured ? 'Connect Google' : 'View setup',
