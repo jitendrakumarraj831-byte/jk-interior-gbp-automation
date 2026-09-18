@@ -1,23 +1,31 @@
 'use client';
 
-/** The publish queue: posts waiting on cron, plus anything that failed. */
+/** The publish queue: what is waiting, what failed, and what recently went live. */
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api, ApiError, formatDateTime, relativeTime } from '@/lib/client';
 import {
-  Alert,
+  AlertIcon,
+  CalendarIcon,
+  CheckCircleIcon,
+  CheckIcon,
+  PlusIcon,
+  RefreshIcon,
+  SendIcon,
+} from '@/components/icons';
+import {
   Badge,
   Button,
+  ButtonLink,
+  Callout,
   Card,
-  CardHeader,
   EmptyState,
-  LoadingCard,
-  PageHeading,
+  PageHeader,
+  SectionHeader,
+  SkeletonCard,
 } from '@/components/ui';
 import type { GbpPost } from '@/lib/types';
-import { STATUS_META } from '../posts/posts-client';
 
 export default function ScheduledClient() {
   const [posts, setPosts] = useState<GbpPost[]>([]);
@@ -38,9 +46,6 @@ export default function ScheduledClient() {
     }
   }, []);
 
-  // `loading` starts as true, so the initial run needs no synchronous state
-  // update — that is what keeps the effect below free of cascading renders.
-  // Manual refreshes go through this wrapper instead.
   const refresh = useCallback(() => {
     setLoading(true);
     void load();
@@ -54,24 +59,20 @@ export default function ScheduledClient() {
     .filter((p) => p.status === 'scheduled')
     .sort((a, b) => (a.scheduledFor ?? '').localeCompare(b.scheduledFor ?? ''));
   const failed = posts.filter((p) => p.status === 'failed');
-  const published = posts.filter((p) => p.status === 'published').slice(0, 10);
+  const published = posts.filter((p) => p.status === 'published').slice(0, 8);
 
   async function action(post: GbpPost, kind: 'publish' | 'cancel') {
     setBusy(true);
     setError(null);
     setFlash(null);
     try {
-      if (kind === 'publish') {
-        const response = await api.post<{ post: GbpPost }>(`/api/posts/${post.id}/publish`);
-        setFlash(response.message);
-      } else {
-        const response = await api.patch<{ post: GbpPost }>(`/api/posts/${post.id}`, {
-          status: 'cancelled',
-        });
-        setFlash(response.message);
-      }
+      const response =
+        kind === 'publish'
+          ? await api.post<{ post: GbpPost }>(`/api/posts/${post.id}/publish`)
+          : await api.patch<{ post: GbpPost }>(`/api/posts/${post.id}`, { status: 'cancelled' });
+      setFlash(response.message);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : 'That action failed.');
+      setError(caught instanceof ApiError ? caught.message : 'That action did not go through.');
     } finally {
       setBusy(false);
       await load();
@@ -80,123 +81,185 @@ export default function ScheduledClient() {
 
   return (
     <>
-      <PageHeading
+      <PageHeader
+        eyebrow="Content"
         title="Scheduled Posts"
-        description="Vercel Cron publishes these automatically at their scheduled time"
+        description="Posts waiting to publish automatically, and anything that needs another look."
         action={
-          <Button variant="secondary" size="sm" onClick={refresh} disabled={loading}>
-            {loading ? 'Loading…' : 'Refresh'}
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              onClick={refresh}
+              loading={loading}
+              icon={<RefreshIcon size={16} />}
+              className="hidden sm:inline-flex"
+            >
+              Refresh
+            </Button>
+            <ButtonLink href="/dashboard/posts" icon={<PlusIcon size={17} />}>
+              Create post
+            </ButtonLink>
+          </>
         }
       />
 
       {error ? (
         <div className="mb-4">
-          <Alert tone="danger" title="Could not complete that">
+          <Callout tone="danger" title="That did not go through">
             <p>{error}</p>
-          </Alert>
+          </Callout>
         </div>
       ) : null}
       {flash ? (
         <div className="mb-4">
-          <Alert tone="ok" title="Done">
+          <Callout tone="success" title="Done" icon={<CheckIcon size={18} />}>
             <p>{flash}</p>
-          </Alert>
+          </Callout>
         </div>
       ) : null}
 
-      {loading && posts.length === 0 ? <LoadingCard lines={3} /> : null}
+      {loading && posts.length === 0 ? <SkeletonCard lines={4} /> : null}
 
-      <Card className="mb-4">
-        <CardHeader title="Waiting to publish" description={`${scheduled.length} in the queue`} />
-        {scheduled.length === 0 ? (
-          <EmptyState
-            title="Nothing scheduled"
-            description="Schedule a post from the Posts page and it will show up here."
+      <div className="space-y-5">
+        <section>
+          <SectionHeader
+            title="Waiting to publish"
+            description={`${scheduled.length} in the queue`}
+            icon={<CalendarIcon size={18} />}
+            tone="info"
           />
-        ) : (
-          <ul className="divide-y divide-hairline">
-            {scheduled.map((post) => (
-              <li key={post.id} className="py-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-ink-900">{post.title}</p>
-                    <p className="text-xs text-ink-500">
-                      Publishes {formatDateTime(post.scheduledFor)}
-                    </p>
+          {scheduled.length === 0 && !loading ? (
+            <EmptyState
+              icon={<CalendarIcon size={24} />}
+              tone="info"
+              compact
+              title="Nothing scheduled"
+              description="Schedule a post and it publishes on its own — handy for festival greetings and limited-time offers you want to set up in advance."
+              action={
+                <ButtonLink href="/dashboard/posts" size="sm" icon={<PlusIcon size={15} />}>
+                  Create a post
+                </ButtonLink>
+              }
+            />
+          ) : (
+            <div className="space-y-3">
+              {scheduled.map((post) => (
+                <Card key={post.id} className="animate-fade-up">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 gap-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-info-50 text-info-700">
+                        <CalendarIcon size={19} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-ink-950">{post.title}</p>
+                        <p className="mt-0.5 text-xs text-ink-500">
+                          Publishes {formatDateTime(post.scheduledFor)} ·{' '}
+                          {relativeTime(post.scheduledFor)}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge tone="info" dot>
+                      Scheduled
+                    </Badge>
                   </div>
-                  <Badge tone="brand">Scheduled</Badge>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy} onClick={() => void action(post, 'publish')}>
-                    Publish now
-                  </Button>
+                  <p className="clamp-3 mt-3 text-[0.8125rem] leading-relaxed text-ink-600">
+                    {post.description}
+                  </p>
+                  <div className="mt-3.5 flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      icon={<SendIcon size={14} />}
+                      onClick={() => void action(post, 'publish')}
+                    >
+                      Publish now
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => void action(post, 'cancel')}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {failed.length > 0 ? (
+          <section>
+            <SectionHeader
+              title="Needs attention"
+              description="These were never posted to Google"
+              icon={<AlertIcon size={18} />}
+              tone="danger"
+            />
+            <div className="space-y-3">
+              {failed.map((post) => (
+                <Card key={post.id} className="border-l-[3px] border-l-danger-200">
+                  <p className="text-sm font-semibold text-ink-950">{post.title}</p>
+                  <p className="mt-1.5 rounded-lg bg-danger-50 px-3 py-2 text-[0.8125rem] leading-relaxed text-danger-700">
+                    {post.error}
+                  </p>
                   <Button
                     size="sm"
-                    variant="secondary"
+                    className="mt-3"
                     disabled={busy}
-                    onClick={() => void action(post, 'cancel')}
+                    icon={<RefreshIcon size={14} />}
+                    onClick={() => void action(post, 'publish')}
                   >
-                    Cancel
+                    Try again
                   </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+                </Card>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-      {failed.length > 0 ? (
-        <Card className="mb-4">
-          <CardHeader
-            title="Failed to publish"
-            description="These were never posted to Google. Fix the cause and retry."
+        <section>
+          <SectionHeader
+            title="Recently published"
+            description="Confirmed live on your profile"
+            icon={<CheckCircleIcon size={18} />}
+            tone="success"
+            action={
+              <ButtonLink href="/dashboard/posts" variant="ghost" size="sm">
+                All posts
+              </ButtonLink>
+            }
           />
-          <ul className="divide-y divide-hairline">
-            {failed.map((post) => (
-              <li key={post.id} className="py-3">
-                <p className="truncate font-medium text-ink-900">{post.title}</p>
-                <p className="mt-1 text-sm text-danger-600">{post.error}</p>
-                <Button
-                  size="sm"
-                  className="mt-2"
-                  disabled={busy}
-                  onClick={() => void action(post, 'publish')}
-                >
-                  Retry
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      ) : null}
-
-      <Card>
-        <CardHeader
-          title="Recently published"
-          description="Confirmed live on Google Business Profile"
-          action={
-            <Link href="/dashboard/posts" className="text-sm font-medium text-brand-700 hover:underline">
-              All posts
-            </Link>
-          }
-        />
-        {published.length === 0 ? (
-          <EmptyState title="Nothing published yet" />
-        ) : (
-          <ul className="divide-y divide-hairline">
-            {published.map((post) => (
-              <li key={post.id} className="flex items-center gap-3 py-3">
-                <Badge tone={STATUS_META.published.tone}>Published</Badge>
-                <span className="min-w-0 flex-1 truncate text-sm text-ink-900">{post.title}</span>
-                <span className="shrink-0 text-xs text-ink-500">
-                  {relativeTime(post.publishedAt)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+          {published.length === 0 ? (
+            <EmptyState
+              icon={<CheckCircleIcon size={24} />}
+              tone="success"
+              compact
+              title="Nothing published yet"
+              description="Once a post goes live on Google it is listed here with the time it published."
+            />
+          ) : (
+            <Card padded={false}>
+              <ul className="divide-y divide-line">
+                {published.map((post) => (
+                  <li key={post.id} className="flex items-center gap-3 p-4">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-success-50 text-success-700">
+                      <CheckIcon size={16} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-900">
+                      {post.title}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap text-xs text-ink-400">
+                      {relativeTime(post.publishedAt)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </section>
+      </div>
     </>
   );
 }

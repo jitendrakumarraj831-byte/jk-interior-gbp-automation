@@ -1,64 +1,94 @@
 'use client';
 
 /**
- * Business Profile Performance.
+ * Performance.
  *
- * Every number here comes straight from Google's DailyMetric series — nothing
- * is estimated or derived beyond summing the days in the selected range.
+ * Every figure comes straight from Google's DailyMetric series. Nothing is
+ * derived beyond summing the days in the selected range, and when Google has no
+ * data the page says so rather than drawing an empty chart.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api, ApiError, formatDate } from '@/lib/client';
+import { MetricBars, MetricTable, Sparkline, TrendChart } from '@/components/charts';
+import { StatusNotice } from '@/components/status-notice';
 import {
-  Alert,
+  ChartIcon,
+  ChatIcon,
+  CursorClickIcon,
+  EyeIcon,
+  InfoIcon,
+  PhoneIcon,
+  RefreshIcon,
+  RouteIcon,
+} from '@/components/icons';
+import {
   Badge,
   Button,
+  Callout,
   Card,
-  CardHeader,
   EmptyState,
-  LoadingCard,
-  PageHeading,
-  StatCard,
-  StatusNotice,
+  PageHeader,
+  SectionHeader,
+  Segmented,
+  Skeleton,
+  SkeletonCard,
+  SkeletonMetrics,
+  type Tone,
 } from '@/components/ui';
-import type { MetricSeries, PerformanceSnapshot } from '@/lib/types';
+import type { DailyMetric, MetricSeries, PerformanceSnapshot } from '@/lib/types';
 
 type Payload = { snapshot: PerformanceSnapshot; source: 'google' | 'cache' };
 
-const INTERACTION_METRICS = new Set([
+const INTERACTIONS: DailyMetric[] = [
   'CALL_CLICKS',
   'WEBSITE_CLICKS',
   'BUSINESS_DIRECTION_REQUESTS',
   'BUSINESS_CONVERSATIONS',
-]);
+];
 
-function Sparkline({ series }: { series: MetricSeries }) {
-  const points = series.daily;
-  if (points.length < 2) return null;
+const HEADLINES: {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  tone: Tone;
+  metrics: DailyMetric[] | 'views';
+}[] = [
+  { key: 'views', label: 'Profile views', icon: <EyeIcon size={15} />, tone: 'brand', metrics: 'views' },
+  { key: 'calls', label: 'Calls', icon: <PhoneIcon size={15} />, tone: 'success', metrics: ['CALL_CLICKS'] },
+  {
+    key: 'website',
+    label: 'Website clicks',
+    icon: <CursorClickIcon size={15} />,
+    tone: 'info',
+    metrics: ['WEBSITE_CLICKS'],
+  },
+  {
+    key: 'directions',
+    label: 'Direction requests',
+    icon: <RouteIcon size={15} />,
+    tone: 'ai',
+    metrics: ['BUSINESS_DIRECTION_REQUESTS'],
+  },
+  {
+    key: 'messages',
+    label: 'Messages',
+    icon: <ChatIcon size={15} />,
+    tone: 'warning',
+    metrics: ['BUSINESS_CONVERSATIONS'],
+  },
+];
 
-  const max = Math.max(...points.map((p) => p.value), 1);
-  const width = 100;
-  const height = 28;
-  const path = points
-    .map((point, index) => {
-      const x = (index / (points.length - 1)) * width;
-      const y = height - (point.value / max) * height;
-      return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      role="img"
-      aria-label={`${series.label} trend`}
-      className="mt-2 h-8 w-full"
-    >
-      <path d={path} fill="none" className="stroke-brand-500" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
+/** Sums several series day by day so a sparkline can be drawn for the group. */
+function combine(series: MetricSeries[]): { date: string; value: number }[] {
+  const byDate = new Map<string, number>();
+  for (const entry of series) {
+    for (const point of entry.daily) {
+      byDate.set(point.date, (byDate.get(point.date) ?? 0) + point.value);
+    }
+  }
+  return [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
 }
 
 export default function PerformanceClient() {
@@ -67,6 +97,8 @@ export default function PerformanceClient() {
   const [cacheMessage, setCacheMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(30);
+  const [focus, setFocus] = useState<DailyMetric | 'views'>('views');
+  const [showTable, setShowTable] = useState(false);
 
   const load = useCallback(async (range: number) => {
     try {
@@ -90,111 +122,260 @@ export default function PerformanceClient() {
     void load(days);
   }, [load, days]);
 
+  function changeRange(next: number) {
+    setLoading(true);
+    setDays(next);
+  }
+
+  const series = useMemo(() => payload?.snapshot.series ?? [], [payload]);
+  const viewSeries = useMemo(
+    () => series.filter((s) => s.metric.startsWith('BUSINESS_IMPRESSIONS')),
+    [series],
+  );
+
+  const groupFor = useCallback(
+    (metrics: DailyMetric[] | 'views'): MetricSeries[] =>
+      metrics === 'views' ? viewSeries : series.filter((s) => metrics.includes(s.metric)),
+    [series, viewSeries],
+  );
+
+  const focusSeries: MetricSeries | null = useMemo(() => {
+    if (focus === 'views') {
+      const daily = combine(viewSeries);
+      if (daily.length === 0) return null;
+      return {
+        metric: 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH',
+        label: 'Profile views',
+        total: daily.reduce((sum, p) => sum + p.value, 0),
+        daily,
+      };
+    }
+    return series.find((s) => s.metric === focus) ?? null;
+  }, [focus, series, viewSeries]);
+
   const totals = useMemo(() => {
-    const series = payload?.snapshot.series ?? [];
-    const views = series
-      .filter((s) => s.metric.startsWith('BUSINESS_IMPRESSIONS'))
-      .reduce((sum, s) => sum + s.total, 0);
     const interactions = series
-      .filter((s) => INTERACTION_METRICS.has(s.metric))
+      .filter((s) => INTERACTIONS.includes(s.metric))
       .reduce((sum, s) => sum + s.total, 0);
-    const calls = series.find((s) => s.metric === 'CALL_CLICKS')?.total ?? 0;
-    const website = series.find((s) => s.metric === 'WEBSITE_CLICKS')?.total ?? 0;
-    const directions = series.find((s) => s.metric === 'BUSINESS_DIRECTION_REQUESTS')?.total ?? 0;
-    return { views, interactions, calls, website, directions };
-  }, [payload]);
+    return { interactions };
+  }, [series]);
+
+  const hasData = series.length > 0 && series.some((s) => s.total > 0);
 
   return (
     <>
-      <PageHeading
+      <PageHeader
+        eyebrow="Insights"
         title="Performance"
-        description="Metrics reported by the Google Business Profile Performance API"
+        description="How customers found and contacted JK Interior, reported by Google."
         action={
-          <div className="flex gap-1.5">
-            {[7, 30, 90].map((range) => (
-              <Button
-                key={range}
-                size="sm"
-                variant={days === range ? 'primary' : 'secondary'}
-                onClick={() => setDays(range)}
-                disabled={loading}
-              >
-                {range}d
-              </Button>
-            ))}
-          </div>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setLoading(true);
+              void load(days);
+            }}
+            loading={loading}
+            icon={<RefreshIcon size={16} />}
+          >
+            Refresh
+          </Button>
         }
       />
 
+      {/* Filters sit in one row above the charts. */}
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <Segmented
+          label="Date range"
+          value={days}
+          disabled={loading}
+          onChange={changeRange}
+          options={[
+            { value: 7, label: '7 days' },
+            { value: 30, label: '30 days' },
+            { value: 90, label: '90 days' },
+          ]}
+        />
+        {payload ? (
+          <div className="flex items-center gap-2">
+            <Badge tone={payload.source === 'google' ? 'success' : 'warning'} dot>
+              {payload.source === 'google' ? 'Live' : 'Cached'}
+            </Badge>
+            <span className="hidden text-xs text-ink-400 sm:inline">
+              {formatDate(payload.snapshot.rangeStart)} – {formatDate(payload.snapshot.rangeEnd)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
       {notice ? (
         <div className="mb-5">
-          <StatusNotice status={notice.status} message={notice.message} />
+          <StatusNotice
+            status={notice.status}
+            message={notice.message}
+            subject="performance data"
+            onRetry={() => {
+              setLoading(true);
+              void load(days);
+            }}
+          />
         </div>
       ) : null}
 
       {cacheMessage ? (
         <div className="mb-5">
-          <Alert tone="warn" title="Showing cached data">
+          <Callout tone="warning" title="Showing the last synced snapshot" icon={<InfoIcon size={18} />}>
             <p>{cacheMessage}</p>
-          </Alert>
+          </Callout>
         </div>
       ) : null}
 
       {loading && !payload ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {[0, 1, 2, 3].map((n) => (
-            <LoadingCard key={n} lines={1} />
-          ))}
+        <div className="space-y-5">
+          <SkeletonMetrics count={4} />
+          <SkeletonCard lines={6} />
         </div>
       ) : null}
 
-      {payload ? (
-        <>
-          <p className="mb-3 text-xs text-ink-500">
-            {formatDate(payload.snapshot.rangeStart)} – {formatDate(payload.snapshot.rangeEnd)} ·
-            Google reports with roughly a two-day delay.
-          </p>
+      {payload && !hasData ? (
+        <EmptyState
+          icon={<ChartIcon size={24} />}
+          tone="success"
+          title="No activity in this range"
+          description="Google reports with about a two-day delay, and a newer profile needs some search traffic before numbers appear. Try a longer range."
+          action={
+            days < 90 ? (
+              <Button size="sm" variant="secondary" onClick={() => changeRange(90)}>
+                Try 90 days
+              </Button>
+            ) : null
+          }
+        />
+      ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <StatCard label="Profile views" value={totals.views.toLocaleString('en-IN')} tone="brand" />
-            <StatCard
-              label="Interactions"
-              value={totals.interactions.toLocaleString('en-IN')}
-              hint="Calls, website clicks, directions, messages"
-            />
-            <StatCard label="Calls" value={totals.calls.toLocaleString('en-IN')} />
-            <StatCard label="Website clicks" value={totals.website.toLocaleString('en-IN')} />
-            <StatCard label="Direction requests" value={totals.directions.toLocaleString('en-IN')} />
+      {payload && hasData ? (
+        <div className="space-y-5 sm:space-y-6">
+          {/* ------------------------- stat tiles ------------------------ */}
+          <div className="rail -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:overflow-visible sm:px-0 lg:grid-cols-5">
+            {HEADLINES.map((headline) => {
+              const group = groupFor(headline.metrics);
+              const total = group.reduce((sum, s) => sum + s.total, 0);
+              const daily = headline.metrics === 'views' ? combine(group) : (group[0]?.daily ?? []);
+              const selected =
+                focus === (headline.metrics === 'views' ? 'views' : headline.metrics[0]);
+
+              return (
+                <button
+                  key={headline.key}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() =>
+                    setFocus(headline.metrics === 'views' ? 'views' : headline.metrics[0]!)
+                  }
+                  className={`w-[13.5rem] shrink-0 rounded-card border bg-surface p-4 text-left shadow-card transition-[box-shadow,border-color] duration-200 hover:shadow-raised sm:w-auto sm:shrink ${
+                    selected ? 'border-brand-300 ring-1 ring-brand-200' : 'border-line'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-[0.8125rem] font-medium text-ink-500">{headline.label}</span>
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
+                        selected ? 'bg-brand-50 text-brand-700' : 'bg-subtle text-ink-500'
+                      }`}
+                    >
+                      {headline.icon}
+                    </span>
+                  </div>
+                  <p className="tnum mt-2 text-[1.75rem] font-semibold leading-none text-ink-950">
+                    {total.toLocaleString('en-IN')}
+                  </p>
+                  <div className="mt-2.5">
+                    <Sparkline points={daily} label={headline.label} />
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
-          <div className="mt-4">
-            <Card>
-              <CardHeader
-                title="By metric"
-                description="Exactly the metrics Google's DailyMetric enum exposes"
-                action={<Badge tone={payload.source === 'google' ? 'ok' : 'warn'}>{payload.source === 'google' ? 'Live' : 'Cached'}</Badge>}
+          {/* --------------------------- trend --------------------------- */}
+          <Card>
+            <SectionHeader
+              title={focusSeries ? focusSeries.label : 'Trend'}
+              description={`Daily total over the last ${days} days · tap the chart to inspect a day`}
+              icon={<ChartIcon size={18} />}
+              tone="brand"
+              action={
+                focusSeries ? (
+                  <span className="tnum text-sm font-semibold text-ink-900">
+                    {focusSeries.total.toLocaleString('en-IN')}
+                  </span>
+                ) : undefined
+              }
+            />
+            {focusSeries ? (
+              <TrendChart series={focusSeries} />
+            ) : (
+              <p className="py-10 text-center text-sm text-ink-500">
+                Google returned no data for this metric.
+              </p>
+            )}
+          </Card>
+
+          {/* ------------------------ all metrics ------------------------ */}
+          <div className="grid gap-5 lg:grid-cols-2 lg:gap-6">
+            <Card className="min-w-0">
+              <SectionHeader
+                title="All metrics"
+                description="Exactly what Google's DailyMetric reports — nothing derived"
+                action={
+                  <Button size="sm" variant="ghost" onClick={() => setShowTable((v) => !v)}>
+                    {showTable ? 'Show chart' : 'Show table'}
+                  </Button>
+                }
               />
-              {payload.snapshot.series.length === 0 ? (
-                <EmptyState
-                  title="Google returned no data for this range"
-                  description="New or low-traffic profiles often have empty series until enough activity accumulates."
-                />
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {payload.snapshot.series.map((series) => (
-                    <div key={series.metric} className="rounded-xl bg-canvas p-3">
-                      <p className="truncate text-xs font-medium text-ink-500">{series.label}</p>
-                      <p className="mt-1 text-xl font-semibold tabular-nums text-ink-900">
-                        {series.total.toLocaleString('en-IN')}
-                      </p>
-                      <Sparkline series={series} />
-                    </div>
+              {showTable ? <MetricTable series={series} /> : <MetricBars series={series} />}
+            </Card>
+
+            <Card className="min-w-0">
+              <SectionHeader
+                title="Customer actions"
+                description="Calls, website clicks, directions and messages combined"
+                icon={<CursorClickIcon size={18} />}
+                tone="success"
+              />
+              <p className="tnum text-[2.5rem] font-semibold leading-none text-ink-950">
+                {totals.interactions.toLocaleString('en-IN')}
+              </p>
+              <p className="mt-1.5 text-sm text-ink-500">
+                actions in the last {days} days
+              </p>
+              <ul className="mt-4 space-y-2.5 border-t border-line pt-4">
+                {series
+                  .filter((s) => INTERACTIONS.includes(s.metric))
+                  .sort((a, b) => b.total - a.total)
+                  .map((entry) => (
+                    <li key={entry.metric} className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 truncate text-[0.8125rem] text-ink-600">{entry.label}</span>
+                      <span className="tnum shrink-0 text-[0.8125rem] font-semibold text-ink-900">
+                        {entry.total.toLocaleString('en-IN')}
+                      </span>
+                    </li>
                   ))}
-                </div>
-              )}
+              </ul>
             </Card>
           </div>
-        </>
+
+          <p className="text-xs leading-relaxed text-ink-400">
+            Google reports Business Profile performance with roughly a two-day delay, so the range
+            above ends two days before today.
+          </p>
+        </div>
+      ) : null}
+
+      {loading && payload ? (
+        <div className="mt-4">
+          <Skeleton className="h-1 w-full" />
+        </div>
       ) : null}
     </>
   );

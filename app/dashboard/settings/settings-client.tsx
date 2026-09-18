@@ -12,13 +12,23 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { api, ApiError } from '@/lib/client';
 import {
-  Alert,
+  AlertIcon,
+  CheckCircleIcon,
+  ExternalIcon,
+  LogoutIcon,
+  RefreshIcon,
+  SettingsIcon,
+  ShieldIcon,
+  SparkIcon,
+} from '@/components/icons';
+import {
   Badge,
   Button,
+  Callout,
   Card,
-  CardHeader,
-  LoadingCard,
-  PageHeading,
+  PageHeader,
+  SectionHeader,
+  SkeletonCard,
 } from '@/components/ui';
 
 type Payload = {
@@ -46,6 +56,7 @@ type Payload = {
 };
 
 function Toggle({
+  id,
   label,
   description,
   checked,
@@ -53,6 +64,7 @@ function Toggle({
   disabled,
   warn,
 }: {
+  id: string;
   label: string;
   description: string;
   checked: boolean;
@@ -61,25 +73,27 @@ function Toggle({
   warn?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 py-3">
+    <div className="flex items-start justify-between gap-4 py-4 first:pt-0 last:pb-0">
       <div className="min-w-0">
-        <p className="text-sm font-medium text-ink-900">{label}</p>
-        <p className="mt-0.5 text-sm text-ink-500">{description}</p>
+        <label htmlFor={id} className="text-sm font-medium text-ink-900">
+          {label}
+        </label>
+        <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{description}</p>
       </div>
       <button
+        id={id}
         type="button"
         role="switch"
         aria-checked={checked}
-        aria-label={label}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-          checked ? (warn ? 'bg-gold-500' : 'bg-brand-600') : 'bg-ink-300'
+        className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors duration-200 disabled:opacity-50 ${
+          checked ? (warn ? 'bg-warning-600' : 'bg-brand-600') : 'bg-ink-300'
         }`}
       >
         <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-5.5' : 'translate-x-0.5'
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-xs transition-transform duration-200 ${
+            checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5'
           }`}
         />
       </button>
@@ -89,12 +103,14 @@ function Toggle({
 
 function ConfigRow({ label, ready, note }: { label: string; ready: boolean; note: string }) {
   return (
-    <li className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-      <div className="min-w-0">
-        <code className="text-sm text-ink-900">{label}</code>
-        <p className="text-xs text-ink-500">{note}</p>
+    <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0 flex-1">
+        <code className="text-[0.8125rem] font-medium text-ink-800">{label}</code>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink-500">{note}</p>
       </div>
-      <Badge tone={ready ? 'ok' : 'warn'}>{ready ? 'Configured' : 'Not set'}</Badge>
+      <Badge tone={ready ? 'success' : 'warning'} dot>
+        {ready ? 'Configured' : 'Not set'}
+      </Badge>
     </li>
   );
 }
@@ -111,12 +127,18 @@ export default function SettingsClient() {
     try {
       const response = await api.get<Payload>('/api/settings');
       setPayload(response.data);
+      setError(null);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : 'Could not load settings.');
+      setError(caught instanceof ApiError ? caught.message : 'Could not load your settings.');
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    void load();
+  }, [load]);
 
   useEffect(() => {
     void load();
@@ -131,7 +153,7 @@ export default function SettingsClient() {
       setFlash(response.message);
       await load();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : 'Could not save settings.');
+      setError(caught instanceof ApiError ? caught.message : 'Could not save that change.');
     } finally {
       setBusy(false);
     }
@@ -145,40 +167,70 @@ export default function SettingsClient() {
 
   return (
     <>
-      <PageHeading title="Settings" description="Automation behaviour and configuration status" />
+      <PageHeader
+        eyebrow="Configuration"
+        title="Settings"
+        description="How the automation behaves, and what is still waiting to be set up."
+        action={
+          <Button variant="secondary" onClick={refresh} loading={loading} icon={<RefreshIcon size={16} />}>
+            Refresh
+          </Button>
+        }
+      />
 
       {error ? (
         <div className="mb-4">
-          <Alert tone="danger" title="Problem">
+          <Callout tone="danger" title="Something went wrong">
             <p>{error}</p>
-          </Alert>
+          </Callout>
         </div>
       ) : null}
       {flash ? (
         <div className="mb-4">
-          <Alert tone="ok" title="Saved">
+          <Callout tone="success" title="Saved" icon={<CheckCircleIcon size={18} />}>
             <p>{flash}</p>
-          </Alert>
+          </Callout>
         </div>
       ) : null}
 
-      {loading && !payload ? <LoadingCard lines={4} /> : null}
+      {loading && !payload ? <SkeletonCard lines={5} /> : null}
 
       {payload ? (
-        <>
-          <Card className="mb-4">
-            <CardHeader title="Automation" description="These take effect on the next cron run" />
-            <div className="divide-y divide-hairline">
+        <div className="space-y-5">
+          {payload.warnings.length > 0 ? (
+            <Callout tone="warning" title="Still to set up" icon={<AlertIcon size={18} />}>
+              <ul className="mt-1 list-disc space-y-1.5 pl-5">
+                {payload.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </Callout>
+          ) : (
+            <Callout tone="success" title="Everything is configured" icon={<CheckCircleIcon size={18} />}>
+              <p>No outstanding setup steps. Your automation is running end to end.</p>
+            </Callout>
+          )}
+
+          <Card>
+            <SectionHeader
+              title="Automation"
+              description="These take effect on the next scheduled run"
+              icon={<SparkIcon size={18} />}
+              tone="ai"
+            />
+            <div className="divide-y divide-line">
               <Toggle
-                label="Generate reply drafts automatically"
-                description="When cron finds an unanswered review, draft a reply for it."
+                id="auto-drafts"
+                label="Draft replies automatically"
+                description="When a sync finds a review without a reply, write a draft for it. You still approve every one."
                 checked={payload.settings.autoGenerateDrafts}
                 disabled={busy || !payload.config.aiConfigured}
                 onChange={(value) => void patch({ autoGenerateDrafts: value })}
               />
               <Toggle
+                id="auto-publish"
                 label="Publish approved replies automatically"
-                description="Off by design. Turning this on lets cron publish approved drafts without a final human check."
+                description="Off by design. Turning this on lets scheduled jobs publish approved drafts without a final look from you."
                 checked={payload.settings.autoPublishReplies}
                 disabled={busy}
                 warn
@@ -186,21 +238,16 @@ export default function SettingsClient() {
               />
             </div>
 
-            <div className="mt-3 border-t border-hairline pt-3">
-              <label
-                htmlFor="min-stars"
-                className="mb-1.5 block text-sm font-medium text-ink-900"
-              >
-                Only auto-draft for reviews rated at least
+            <div className="mt-4 border-t border-line pt-4">
+              <label htmlFor="min-stars" className="mb-1.5 block text-sm font-medium text-ink-900">
+                Only draft replies for reviews rated
               </label>
               <select
                 id="min-stars"
                 value={payload.settings.autoDraftMinStars}
                 disabled={busy}
-                onChange={(event) =>
-                  void patch({ autoDraftMinStars: Number(event.target.value) })
-                }
-                className="w-full rounded-xl border border-hairline bg-surface px-3.5 py-2.5 text-ink-900 outline-none focus:border-brand-500 sm:max-w-xs"
+                onChange={(event) => void patch({ autoDraftMinStars: Number(event.target.value) })}
+                className="w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-ink-900 outline-none transition-colors focus:border-brand-500 sm:max-w-xs"
               >
                 {[1, 2, 3, 4, 5].map((stars) => (
                   <option key={stars} value={stars}>
@@ -211,18 +258,21 @@ export default function SettingsClient() {
             </div>
 
             {!payload.config.aiConfigured ? (
-              <p className="mt-3 text-xs text-warn-700">
-                OPENAI_API_KEY is not set, so drafting is disabled regardless of this switch.
+              <p className="mt-3 rounded-xl bg-warning-50 px-3.5 py-2.5 text-xs leading-relaxed text-warning-700">
+                OPENAI_API_KEY is not set, so drafting is unavailable regardless of these switches.
               </p>
             ) : null}
           </Card>
 
-          <Card className="mb-4">
-            <CardHeader
+          <Card>
+            <SectionHeader
               title="Configuration"
-              description="Status only — values are never read by the browser"
+              description="Status only — no value is ever sent to your browser"
+              icon={<ShieldIcon size={18} />}
+              tone="brand"
+              action={<Badge tone="neutral">{payload.config.environment}</Badge>}
             />
-            <ul className="divide-y divide-hairline">
+            <ul className="divide-y divide-line">
               <ConfigRow
                 label="GOOGLE_CLIENT_ID / SECRET / REDIRECT_URI"
                 ready={payload.config.oauthConfigured}
@@ -231,7 +281,7 @@ export default function SettingsClient() {
               <ConfigRow
                 label="GOOGLE_REFRESH_TOKEN"
                 ready={payload.config.googleConfigured}
-                note="Long-lived credential for the connected Business Profile"
+                note="Long-lived credential for the connected profile"
               />
               <ConfigRow
                 label="OPENAI_API_KEY"
@@ -241,7 +291,7 @@ export default function SettingsClient() {
               <ConfigRow
                 label="CRON_SECRET"
                 ready={payload.config.cronConfigured}
-                note="Protects every /api/cron endpoint"
+                note="Protects every scheduled job endpoint"
               />
               <ConfigRow
                 label="ADMIN_PASSWORD / SESSION_SECRET"
@@ -259,51 +309,49 @@ export default function SettingsClient() {
                 note="Optional — pins the location instead of auto-detecting it"
               />
             </ul>
-            <p className="mt-3 text-xs text-ink-500">
-              Environment: {payload.config.environment}
-            </p>
           </Card>
 
-          <Card className="mb-4">
-            <CardHeader title="Business" description="Used to ground AI reply drafts" />
-            <p className="text-sm text-ink-900">{payload.business.name}</p>
-            <a
-              href={payload.business.website}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-sm text-brand-700 underline underline-offset-2"
-            >
-              {payload.business.website}
-            </a>
-            <div className="mt-3 flex flex-wrap gap-1.5">
+          <Card>
+            <SectionHeader
+              title="Business"
+              description="Used to ground the tone and wording of AI reply drafts"
+              icon={<SettingsIcon size={18} />}
+              tone="neutral"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-ink-950">{payload.business.name}</p>
+                <a
+                  href={payload.business.website}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 text-[0.8125rem] text-brand-700 hover:underline"
+                >
+                  {payload.business.website.replace(/^https?:\/\//, '')}
+                  <ExternalIcon size={13} />
+                </a>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-1.5 border-t border-line pt-4">
               {payload.business.services.map((service) => (
-                <Badge key={service}>{service}</Badge>
+                <Badge key={service} tone="neutral">
+                  {service}
+                </Badge>
               ))}
             </div>
           </Card>
 
-          {payload.warnings.length > 0 ? (
-            <div className="mb-4">
-              <Alert tone="warn" title="Still to do">
-                <ul className="mt-1 list-disc space-y-1 pl-5">
-                  {payload.warnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              </Alert>
-            </div>
-          ) : null}
-
           {payload.config.adminAuthConfigured ? (
             <Card>
-              <CardHeader title="Session" />
-              <Button variant="secondary" onClick={() => void signOut()}>
+              <SectionHeader title="Session" description="You are signed in as the administrator" />
+              <Button variant="secondary" icon={<LogoutIcon size={16} />} onClick={() => void signOut()}>
                 Sign out
               </Button>
             </Card>
           ) : null}
-        </>
+        </div>
       ) : null}
     </>
   );
 }
+

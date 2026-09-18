@@ -188,4 +188,10 @@ export type DashboardSummary = {
   totalReviews: number;
   automation: { enabled: boolean; lastRuns: AutomationRun[] };
   warnings: string[];
+  /**
+   * The few most recent reviews, for the dashboard's "Recent reviews" section.
+   * Sliced from the reviews this endpoint already fetches, so surfacing them
+   * costs no extra Google API call.
+   */
+  recentReviews: Review[];
 };

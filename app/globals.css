@@ -1,38 +1,172 @@
 @import 'tailwindcss';
 
-/*
- * JK Interior — light, premium admin theme.
- * Deliberately light-only: the dashboard is used on a phone in daylight, and a
- * dark variant was explicitly not wanted.
- */
+/* =============================================================================
+   JK Interior — design tokens
+   Light theme only, by product decision. A premium SaaS surface: cool neutrals,
+   one confident brand blue, and semantic accents used sparingly so that colour
+   always carries meaning rather than decoration.
+   ========================================================================== */
+
 @theme {
-  --color-ink-900: oklch(0.21 0.02 260);
-  --color-ink-700: oklch(0.38 0.015 260);
-  --color-ink-500: oklch(0.55 0.012 260);
-  --color-ink-300: oklch(0.75 0.01 260);
+  /* --- typography ------------------------------------------------------- */
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
 
+  /* --- neutrals --------------------------------------------------------- */
+  /* Slightly cool greys. `ink` is text, `canvas`/`surface` are backgrounds. */
+  --color-ink-950: oklch(0.19 0.017 264);
+  --color-ink-900: oklch(0.25 0.017 264);
+  --color-ink-800: oklch(0.33 0.016 264);
+  --color-ink-700: oklch(0.42 0.015 264);
+  --color-ink-600: oklch(0.51 0.014 264);
+  --color-ink-500: oklch(0.60 0.013 264);
+  --color-ink-400: oklch(0.70 0.012 264);
+  --color-ink-300: oklch(0.81 0.009 264);
+  --color-ink-200: oklch(0.89 0.006 264);
+
+  --color-canvas: oklch(0.982 0.003 258);
   --color-surface: oklch(1 0 0);
-  --color-canvas: oklch(0.975 0.004 250);
-  --color-hairline: oklch(0.92 0.005 250);
+  --color-subtle: oklch(0.968 0.004 258);
+  --color-line: oklch(0.925 0.005 258);
+  --color-line-strong: oklch(0.872 0.008 258);
 
-  --color-brand-50: oklch(0.97 0.02 265);
-  --color-brand-100: oklch(0.93 0.04 265);
-  --color-brand-500: oklch(0.58 0.15 265);
-  --color-brand-600: oklch(0.51 0.16 265);
-  --color-brand-700: oklch(0.44 0.15 265);
+  /* --- brand: JK Interior blue ------------------------------------------ */
+  --color-brand-50: oklch(0.972 0.014 256);
+  --color-brand-100: oklch(0.938 0.031 256);
+  --color-brand-200: oklch(0.886 0.058 255);
+  --color-brand-300: oklch(0.812 0.094 254);
+  --color-brand-400: oklch(0.711 0.143 256);
+  --color-brand-500: oklch(0.628 0.184 259);
+  --color-brand-600: oklch(0.552 0.208 262);
+  --color-brand-700: oklch(0.487 0.190 264);
+  --color-brand-800: oklch(0.424 0.158 265);
+  --color-brand-900: oklch(0.372 0.124 266);
 
-  --color-gold-100: oklch(0.95 0.05 85);
-  --color-gold-500: oklch(0.76 0.14 80);
+  /* --- semantic accents -------------------------------------------------- */
+  --color-success-50: oklch(0.966 0.032 158);
+  --color-success-100: oklch(0.926 0.063 158);
+  --color-success-200: oklch(0.866 0.099 158);
+  --color-success-600: oklch(0.567 0.134 156);
+  --color-success-700: oklch(0.487 0.117 156);
 
-  --color-ok-50: oklch(0.96 0.03 155);
-  --color-ok-600: oklch(0.55 0.13 155);
-  --color-warn-50: oklch(0.97 0.04 85);
-  --color-warn-700: oklch(0.52 0.11 70);
-  --color-danger-50: oklch(0.96 0.03 25);
-  --color-danger-600: oklch(0.56 0.18 25);
+  --color-warning-50: oklch(0.977 0.035 88);
+  --color-warning-100: oklch(0.944 0.070 88);
+  --color-warning-200: oklch(0.894 0.108 87);
+  --color-warning-600: oklch(0.680 0.145 62);
+  --color-warning-700: oklch(0.545 0.123 55);
 
+  --color-danger-50: oklch(0.969 0.019 18);
+  --color-danger-100: oklch(0.932 0.039 18);
+  --color-danger-200: oklch(0.879 0.068 18);
+  --color-danger-600: oklch(0.577 0.208 26);
+  --color-danger-700: oklch(0.505 0.183 26);
+
+  --color-info-50: oklch(0.972 0.019 226);
+  --color-info-100: oklch(0.936 0.041 226);
+  --color-info-600: oklch(0.588 0.132 235);
+  --color-info-700: oklch(0.503 0.114 235);
+
+  /* Google connection — emerald reads as "live / linked" without borrowing
+     any Google brand colour. */
+  --color-google-50: oklch(0.970 0.026 165);
+  --color-google-100: oklch(0.930 0.055 165);
+  --color-google-600: oklch(0.585 0.124 163);
+  --color-google-700: oklch(0.498 0.107 163);
+
+  /* AI features — violet, distinct from brand blue so AI content is
+     instantly separable from customer content. */
+  --color-ai-50: oklch(0.972 0.019 305);
+  --color-ai-100: oklch(0.942 0.040 305);
+  --color-ai-200: oklch(0.895 0.070 305);
+  --color-ai-600: oklch(0.564 0.207 304);
+  --color-ai-700: oklch(0.493 0.183 304);
+
+  /* Star rating gold */
+  --color-gold-400: oklch(0.842 0.124 86);
+  --color-gold-500: oklch(0.783 0.148 78);
+
+  /* --- radii ------------------------------------------------------------- */
   --radius-card: 1rem;
+  --radius-panel: 1.25rem;
+
+  /* --- elevation --------------------------------------------------------- */
+  /* Layered, low-opacity shadows. Soft, never heavy. */
+  --shadow-xs: 0 1px 2px 0 rgb(16 24 40 / 0.04);
+  --shadow-card:
+    0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.03);
+  --shadow-raised:
+    0 1px 2px 0 rgb(16 24 40 / 0.04), 0 12px 24px -12px rgb(16 24 40 / 0.14);
+  --shadow-pop:
+    0 4px 8px -2px rgb(16 24 40 / 0.06), 0 24px 48px -12px rgb(16 24 40 / 0.20);
+  --shadow-brand: 0 6px 16px -6px oklch(0.552 0.208 262 / 0.45);
+
+  /* --- motion ------------------------------------------------------------ */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --animate-fade-up: fade-up 0.32s var(--ease-out-soft) both;
+  --animate-fade-in: fade-in 0.22s var(--ease-out-soft) both;
+  --animate-sheet-up: sheet-up 0.26s var(--ease-out-soft) both;
+  --animate-scrim: fade-in 0.18s linear both;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-pop-in: pop-in 0.24s var(--ease-out-soft) both;
 }
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* =============================================================================
+   Base
+   ========================================================================== */
 
 :root {
   color-scheme: light;
@@ -40,20 +174,20 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  /* Keeps the sticky header from covering an anchored section. */
+  scroll-padding-top: 5rem;
 }
 
 body {
   background-color: var(--color-canvas);
   color: var(--color-ink-900);
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  /* Room for the fixed mobile tab bar. */
-  padding-bottom: env(safe-area-inset-bottom);
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02', 'cv03', 'cv04';
 }
 
-/* Inputs must stay >=16px on iOS or Safari zooms the page on focus. */
+/* Inputs must stay >=16px on mobile or iOS Safari zooms the page on focus. */
 input,
 textarea,
 select {
@@ -64,13 +198,49 @@ select {
   input,
   textarea,
   select {
-    font-size: 0.925rem;
+    font-size: 0.9375rem;
   }
 }
 
+/* A single, visible focus treatment everywhere. */
 *:focus-visible {
   outline: 2px solid var(--color-brand-500);
   outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* Tabular figures for every metric so digits never jitter while loading. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Horizontal metric rails on mobile: snap, and hide the scrollbar chrome. */
+.rail {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  /* Without this the snapport ignores the rail's own inline padding and the
+     first card lands flush against the screen edge instead of lining up with
+     the section heading above it. */
+  scroll-padding-inline: 1rem;
+}
+
+.rail::-webkit-scrollbar {
+  display: none;
+}
+
+.rail > * {
+  scroll-snap-align: start;
+}
+
+/* Clamp long review text without a layout jump. */
+.clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -78,6 +248,8 @@ select {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

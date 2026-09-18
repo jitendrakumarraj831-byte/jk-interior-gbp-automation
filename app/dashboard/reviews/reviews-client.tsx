@@ -1,29 +1,35 @@
 'use client';
 
 /**
- * Review list.
+ * Reviews.
  *
- * Shows reviewer, rating, text, date, any reply already live on Google and the
- * local reply status. "Draft reply" only creates a draft — it never publishes.
+ * One primary action per card — "Generate reply" when nothing exists yet,
+ * "Review reply" when a draft is already waiting — so the list never turns into
+ * a wall of buttons.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { api, ApiError, formatDate } from '@/lib/client';
+import { api, ApiError, relativeTime } from '@/lib/client';
+import { ReviewCard } from '@/components/review-card';
+import { StatusNotice } from '@/components/status-notice';
+import { ChevronRightIcon, InfoIcon, RefreshIcon, SparkIcon, StarIcon } from '@/components/icons';
 import {
-  Alert,
   Badge,
   Button,
-  Card,
+  ButtonLink,
+  Callout,
   EmptyState,
-  LoadingCard,
-  PageHeading,
-  Stars,
-  StatusNotice,
-  type Tone,
+  MetricCard,
+  MetricRail,
+  PageHeader,
+  RailItem,
+  Segmented,
+  SkeletonCard,
+  SkeletonMetrics,
 } from '@/components/ui';
-import type { ReplyDraft, ReplyStatus, Review } from '@/lib/types';
+import type { ReplyDraft, Review } from '@/lib/types';
 
 type Payload = {
   reviews: Review[];
@@ -33,22 +39,19 @@ type Payload = {
   fetchedAt: string;
 };
 
-const STATUS_LABEL: Record<ReplyStatus, { label: string; tone: Tone }> = {
-  no_reply: { label: 'No reply', tone: 'neutral' },
-  draft_pending: { label: 'Draft awaiting approval', tone: 'warn' },
-  approved: { label: 'Approved — not published', tone: 'brand' },
-  published: { label: 'Reply published', tone: 'ok' },
-  publish_failed: { label: 'Publish failed', tone: 'danger' },
-  replied_on_google: { label: 'Replied on Google', tone: 'ok' },
-};
+type Filter = 'all' | 'needs_reply' | 'low';
 
-type Filter = 'all' | 'unanswered' | 'negative';
+const FILTERS: { value: Filter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'needs_reply', label: 'Needs reply' },
+  { value: 'low', label: '3★ & below' },
+];
 
 export default function ReviewsClient() {
   const router = useRouter();
   const [payload, setPayload] = useState<Payload | null>(null);
   const [notice, setNotice] = useState<{ status: string; message: string } | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
@@ -57,7 +60,7 @@ export default function ReviewsClient() {
     try {
       const response = await api.get<Payload>('/api/reviews');
       setPayload(response.data);
-      setMessage(response.data?.source === 'cache' ? response.message : null);
+      setCacheMessage(response.data?.source === 'cache' ? response.message : null);
       setNotice(null);
     } catch (caught) {
       const error = caught instanceof ApiError ? caught : null;
@@ -71,9 +74,6 @@ export default function ReviewsClient() {
     }
   }, []);
 
-  // `loading` starts as true, so the initial run needs no synchronous state
-  // update — that is what keeps the effect below free of cascading renders.
-  // Manual refreshes go through this wrapper instead.
   const refresh = useCallback(() => {
     setLoading(true);
     void load();
@@ -85,7 +85,7 @@ export default function ReviewsClient() {
 
   async function draftReply(review: Review) {
     setDrafting(review.reviewId);
-    setMessage(null);
+    setNotice(null);
     try {
       await api.post<{ draft: ReplyDraft }>('/api/reviews/reply', {
         reviewId: review.reviewId,
@@ -97,136 +97,160 @@ export default function ReviewsClient() {
       });
       router.push('/dashboard/drafts');
     } catch (caught) {
-      setMessage(caught instanceof ApiError ? caught.message : 'Could not generate a draft.');
+      setNotice({
+        status: caught instanceof ApiError ? caught.status : 'error',
+        message: caught instanceof ApiError ? caught.message : 'Could not generate a draft.',
+      });
     } finally {
       setDrafting(null);
     }
   }
 
+  const all = useMemo(() => payload?.reviews ?? [], [payload]);
   const reviews = useMemo(() => {
-    const all = payload?.reviews ?? [];
-    if (filter === 'unanswered') return all.filter((r) => !r.existingReply);
-    if (filter === 'negative') return all.filter((r) => r.starRating <= 3);
+    if (filter === 'needs_reply') return all.filter((r) => !r.existingReply);
+    if (filter === 'low') return all.filter((r) => r.starRating <= 3);
     return all;
-  }, [payload, filter]);
+  }, [all, filter]);
+
+  const unanswered = all.filter((r) => !r.existingReply).length;
 
   return (
     <>
-      <PageHeading
+      <PageHeader
+        eyebrow="Customers"
         title="Reviews"
-        description={
-          payload
-            ? `${payload.totalReviewCount} review(s) · average ${
-                payload.averageRating != null ? payload.averageRating.toFixed(1) : '—'
-              }`
-            : 'Google Business Profile reviews'
-        }
+        description="Everything customers have said about JK Interior on Google, and where each reply stands."
         action={
-          <Button variant="secondary" size="sm" onClick={refresh} disabled={loading}>
-            {loading ? 'Loading…' : 'Refresh'}
+          <Button variant="secondary" onClick={refresh} loading={loading} icon={<RefreshIcon size={16} />}>
+            Refresh
           </Button>
         }
       />
 
       {notice ? (
         <div className="mb-5">
-          <StatusNotice status={notice.status} message={notice.message} />
+          <StatusNotice
+          status={notice.status}
+          message={notice.message}
+          subject="reviews"
+          onRetry={refresh}
+        />
         </div>
       ) : null}
 
-      {message ? (
+      {cacheMessage ? (
         <div className="mb-5">
-          <Alert tone="warn" title="Heads up">
-            <p>{message}</p>
-          </Alert>
+          <Callout tone="warning" title="Showing the last synced copy" icon={<InfoIcon size={18} />}>
+            <p>{cacheMessage}</p>
+          </Callout>
         </div>
       ) : null}
-
-      <div className="mb-4 flex flex-wrap gap-2">
-        {(
-          [
-            ['all', 'All'],
-            ['unanswered', 'Needs a reply'],
-            ['negative', '3 stars & below'],
-          ] as [Filter, string][]
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setFilter(value)}
-            className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
-              filter === value
-                ? 'bg-brand-600 text-white'
-                : 'bg-surface text-ink-700 ring-1 ring-inset ring-hairline'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
 
       {loading && !payload ? (
-        <div className="space-y-3">
-          <LoadingCard />
-          <LoadingCard />
+        <SkeletonMetrics count={3} />
+      ) : payload ? (
+        <MetricRail className="lg:grid-cols-3">
+          <RailItem>
+            <MetricCard
+              label="Total reviews"
+              value={payload.totalReviewCount}
+              icon={<StarIcon size={15} />}
+              tone="warning"
+            />
+          </RailItem>
+          <RailItem>
+            <MetricCard
+              label="Average rating"
+              value={payload.averageRating != null ? payload.averageRating.toFixed(1) : null}
+              icon={<StarIcon size={15} />}
+              tone="warning"
+              hint="Out of 5"
+            />
+          </RailItem>
+          <RailItem>
+            <MetricCard
+              label="Awaiting a reply"
+              value={unanswered}
+              icon={<SparkIcon size={15} />}
+              tone={unanswered > 0 ? 'ai' : 'success'}
+              hint={unanswered > 0 ? 'Reply to build trust' : 'All caught up'}
+            />
+          </RailItem>
+        </MetricRail>
+      ) : null}
+
+      {payload ? (
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+          <Segmented options={FILTERS} value={filter} onChange={setFilter} label="Filter reviews" />
+          <p className="text-xs text-ink-400">Updated {relativeTime(payload.fetchedAt)}</p>
         </div>
       ) : null}
 
-      {payload && reviews.length === 0 ? (
-        <EmptyState
-          title="No reviews to show"
-          description="Nothing matches this filter yet. New reviews appear after the next sync."
-        />
-      ) : null}
+      <div className="mt-4 space-y-3">
+        {loading && !payload ? (
+          <>
+            <SkeletonCard lines={3} />
+            <SkeletonCard lines={3} />
+            <SkeletonCard lines={2} />
+          </>
+        ) : null}
 
-      <div className="space-y-3">
-        {reviews.map((review) => {
-          const status = STATUS_LABEL[review.replyStatus];
-          return (
-            <Card key={review.reviewId}>
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-ink-900">{review.reviewerName}</p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Stars rating={review.starRating} />
-                    <span className="text-xs text-ink-500">{formatDate(review.createTime)}</span>
-                  </div>
-                </div>
-                <Badge tone={status.tone}>{status.label}</Badge>
-              </div>
+        {payload && reviews.length === 0 ? (
+          <EmptyState
+            icon={<StarIcon size={24} />}
+            tone="warning"
+            title={all.length === 0 ? 'No reviews yet' : 'Nothing matches this filter'}
+            description={
+              all.length === 0
+                ? 'When a customer reviews JK Interior on Google, it appears here automatically after the next sync.'
+                : 'Try a different filter to see the rest of your reviews.'
+            }
+            action={
+              all.length > 0 ? (
+                <Button size="sm" variant="secondary" onClick={() => setFilter('all')}>
+                  Show all reviews
+                </Button>
+              ) : null
+            }
+          />
+        ) : null}
 
-              {review.comment ? (
-                <p className="mt-3 whitespace-pre-line text-sm text-ink-700">{review.comment}</p>
-              ) : (
-                <p className="mt-3 text-sm italic text-ink-500">Rating only — no review text.</p>
-              )}
-
-              {review.existingReply ? (
-                <div className="mt-3 rounded-xl bg-canvas p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">
-                    Your reply on Google
-                  </p>
-                  <p className="mt-1 whitespace-pre-line text-sm text-ink-700">
-                    {review.existingReply.comment}
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-4 flex flex-wrap gap-2">
+        {reviews.map((review) => (
+          <ReviewCard
+            key={review.reviewId}
+            review={review}
+            action={
+              review.existingReply ? null : review.replyStatus === 'no_reply' ? (
+                <>
                   <Button
                     size="sm"
                     onClick={() => void draftReply(review)}
-                    disabled={drafting === review.reviewId}
+                    loading={drafting === review.reviewId}
+                    icon={drafting === review.reviewId ? undefined : <SparkIcon size={15} />}
                   >
-                    {drafting === review.reviewId ? 'Drafting…' : 'Draft AI reply'}
+                    Generate reply
                   </Button>
-                  <span className="self-center text-xs text-ink-500">
-                    Creates a draft only — you approve before it goes live.
+                  <span className="text-xs text-ink-400">
+                    Creates a draft — you approve before it goes live.
                   </span>
-                </div>
-              )}
-            </Card>
-          );
-        })}
+                </>
+              ) : (
+                <>
+                  <ButtonLink
+                    href="/dashboard/drafts"
+                    size="sm"
+                    variant="soft"
+                    iconRight={<ChevronRightIcon size={15} />}
+                  >
+                    Review reply
+                  </ButtonLink>
+                  <Badge tone="ai">Draft waiting</Badge>
+                </>
+              )
+            }
+          />
+        ))}
       </div>
     </>
   );

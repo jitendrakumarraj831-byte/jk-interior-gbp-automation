@@ -96,6 +96,10 @@ export async function GET(request: Request) {
         lastRuns: runs.slice(0, 8),
       },
       warnings: configWarnings(refreshToken),
+      // Already fetched above — no additional Google request.
+      recentReviews: [...reviews]
+        .sort((a, b) => b.createTime.localeCompare(a.createTime))
+        .slice(0, 3),
     };
 
     return ok(summary);
