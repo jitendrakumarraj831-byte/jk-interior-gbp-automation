@@ -10,29 +10,36 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 import { MobileHeader, MobileTabBar, SideNav } from '@/components/nav';
-import { isAdminAuthConfigured, isProduction } from '@/lib/config';
+import { adminAuthMode } from '@/lib/config';
 import { ADMIN_COOKIE, verifySessionToken } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const authEnabled = isAdminAuthConfigured();
+  const mode = adminAuthMode();
 
-  if (authEnabled) {
+  // Production without credentials never renders the dashboard. Middleware
+  // catches this first; this check is the authoritative one, because the
+  // signature of the session cookie can only be verified here.
+  if (mode === 'misconfigured') redirect('/config-error');
+
+  if (mode === 'enforced') {
     const token = (await cookies()).get(ADMIN_COOKIE)?.value;
     if (!verifySessionToken(token)) redirect('/login?next=/dashboard');
   }
 
-  const openModeWarning = !authEnabled && isProduction();
+  // Reachable only on a developer's machine — production took one of the
+  // branches above.
+  const developmentBanner = mode === 'development_only';
 
   return (
     <div className="flex min-h-dvh">
       <SideNav />
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileHeader />
-        {openModeWarning ? (
+        {developmentBanner ? (
           <p className="bg-warn-50 px-4 py-2 text-center text-xs font-medium text-warn-700">
-            Open mode — set ADMIN_PASSWORD and SESSION_SECRET to lock this dashboard.
+            Local development — no admin password set. Production refuses to serve without one.
           </p>
         ) : null}
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-24 pt-5 sm:px-6 sm:pb-10 lg:pt-8">

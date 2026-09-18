@@ -9,15 +9,32 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { env, isAdminAuthConfigured, isProduction } from './config';
+import {
+  adminAuthMode,
+  env,
+  isAdminAuthConfigured,
+  isProduction,
+  missingAdminAuthVars,
+} from './config';
 import { AppError, isApprovalPending } from './errors';
 import { log } from './logger';
 import type { ApiEnvelope } from './types';
 
 export const ADMIN_COOKIE = 'jk_admin_session';
 export const OAUTH_STATE_COOKIE = 'jk_oauth_state';
+/**
+ * Double-submit CSRF token. Deliberately NOT httpOnly — the browser must be
+ * able to echo it back in a header, which is the whole point of the pattern.
+ * It is a random per-browser nonce and carries no secret material: it is not
+ * derived from SESSION_SECRET and grants nothing on its own.
+ */
+export const CSRF_COOKIE = 'jk_csrf';
+export const CSRF_HEADER = 'x-csrf-token';
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+
+/** Methods that can change state and therefore need CSRF defences. */
+const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /* ----------------------------- constant time ----------------------------- */
 
@@ -97,6 +114,13 @@ export function verifySessionToken(token: string | undefined | null): boolean {
   return Number.isFinite(expiresAt) && expiresAt > Date.now();
 }
 
+/**
+ * Session cookie settings.
+ *
+ * httpOnly keeps the token out of JavaScript entirely; SameSite=Lax stops it
+ * riding along on cross-site POSTs; Secure is forced on in production so it
+ * never travels over plain HTTP.
+ */
 export function sessionCookieOptions() {
   return {
     httpOnly: true,
@@ -107,20 +131,139 @@ export function sessionCookieOptions() {
   };
 }
 
-/** True when the request may perform admin actions. */
-export function isAuthorizedAdmin(request: Request): boolean {
-  // Open mode: no ADMIN_PASSWORD configured. Allowed so the app deploys and
-  // demos before approval, and surfaced as a warning everywhere in the UI.
-  if (!isAdminAuthConfigured()) return true;
-  const cookie = readCookie(request, ADMIN_COOKIE);
-  return verifySessionToken(cookie);
+/** CSRF cookie settings. Readable by JS by design; never httpOnly. */
+export function csrfCookieOptions() {
+  return {
+    httpOnly: false,
+    sameSite: 'lax' as const,
+    secure: isProduction(),
+    path: '/',
+    maxAge: SESSION_TTL_SECONDS,
+  };
 }
 
-export function assertAdmin(request: Request): void {
-  if (!isAuthorizedAdmin(request)) {
-    throw new AppError('UNAUTHORIZED', 'Admin sign-in required.', 401);
+/* ------------------------------ csrf defences ---------------------------- */
+
+/** The request's own origin, honouring Vercel's forwarding headers. */
+function selfOrigin(request: Request): string | null {
+  const headers = request.headers;
+  const host = headers.get('x-forwarded-host') ?? headers.get('host');
+  if (!host) return null;
+  const proto = headers.get('x-forwarded-proto') ?? (isProduction() ? 'https' : 'http');
+  return `${proto}://${host}`;
+}
+
+/**
+ * Rejects cross-site state-changing requests.
+ *
+ * Browsers always send `Origin` on POST/PUT/PATCH/DELETE, so a missing or
+ * mismatched value on such a request is either a cross-site attempt or a
+ * non-browser client, and neither may mutate admin state through cookies.
+ */
+export function assertSameOrigin(request: Request): void {
+  if (!STATE_CHANGING.has(request.method.toUpperCase())) return;
+
+  const expected = selfOrigin(request);
+  if (!expected) {
+    throw new AppError('CSRF_FAILED', 'Could not determine the request origin.', 403);
+  }
+
+  const origin = request.headers.get('origin');
+  const referer = request.headers.get('referer');
+
+  let actual: string | null = origin;
+  if (!actual && referer) {
+    try {
+      actual = new URL(referer).origin;
+    } catch {
+      actual = null;
+    }
+  }
+
+  if (!actual || actual !== expected) {
+    log.warn('security', 'Rejected a cross-origin state-changing request.', {
+      method: request.method,
+    });
+    throw new AppError('CSRF_FAILED', 'Cross-origin request rejected.', 403);
   }
 }
+
+/**
+ * Double-submit CSRF check: the `jk_csrf` cookie must match the value echoed
+ * back in the `x-csrf-token` header. An attacker on another origin can cause a
+ * request to be sent with our cookies, but cannot read the cookie to set the
+ * header, and cannot set custom headers on a simple cross-site form post.
+ */
+export function assertCsrfToken(request: Request): void {
+  if (!STATE_CHANGING.has(request.method.toUpperCase())) return;
+
+  const cookie = readCookie(request, CSRF_COOKIE);
+  const header = request.headers.get(CSRF_HEADER);
+
+  if (!cookie || !header || !safeEqual(cookie, header)) {
+    log.warn('security', 'Rejected a request with a missing or mismatched CSRF token.', {
+      method: request.method,
+    });
+    throw new AppError(
+      'CSRF_FAILED',
+      'Missing or invalid CSRF token. Reload the dashboard and try again.',
+      403,
+    );
+  }
+}
+
+/* ------------------------------ admin access ----------------------------- */
+
+/**
+ * Production with no ADMIN_PASSWORD / SESSION_SECRET is a configuration fault,
+ * not a mode of operation. Every admin surface raises this instead of serving.
+ */
+export function adminAuthMisconfiguredError(): AppError {
+  return new AppError(
+    'ADMIN_AUTH_NOT_CONFIGURED',
+    `Admin authentication is not configured. Set ${missingAdminAuthVars().join(
+      ' and ',
+    )} in the environment and redeploy. This deployment refuses admin requests until then.`,
+    503,
+  );
+}
+
+/** True when the request carries a valid admin session. */
+export function hasValidSession(request: Request): boolean {
+  return verifySessionToken(readCookie(request, ADMIN_COOKIE));
+}
+
+/**
+ * Gate for every admin surface.
+ *
+ * Fails closed: in production a missing credential configuration raises rather
+ * than granting access. The unauthenticated path exists only for local
+ * development and is unreachable once VERCEL_ENV/NODE_ENV say production.
+ *
+ * State-changing methods additionally pass an Origin check and a double-submit
+ * CSRF token check.
+ */
+export function assertAdmin(request: Request): void {
+  switch (adminAuthMode()) {
+    case 'misconfigured':
+      throw adminAuthMisconfiguredError();
+
+    case 'development_only':
+      // Local convenience only. Origin is still checked so a page on another
+      // origin cannot drive a developer's running instance.
+      assertSameOrigin(request);
+      return;
+
+    case 'enforced':
+      if (!hasValidSession(request)) {
+        throw new AppError('UNAUTHORIZED', 'Admin sign-in required.', 401);
+      }
+      assertSameOrigin(request);
+      assertCsrfToken(request);
+      return;
+  }
+}
+
 
 export function readCookie(request: Request, name: string): string | undefined {
   const header = request.headers.get('cookie');

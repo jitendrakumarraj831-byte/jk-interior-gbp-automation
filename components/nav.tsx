@@ -12,6 +12,8 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { api } from '@/lib/client';
+
 export type NavItem = {
   href: string;
   label: string;
@@ -105,7 +107,9 @@ export function MobileHeader() {
   const current = NAV_ITEMS.find((item) => isActive(pathname, item.href));
 
   async function signOut() {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    // Through the api helper so the request carries the CSRF header and is
+    // sent same-origin only.
+    await api.post('/api/auth/logout').catch(() => undefined);
     router.replace('/login');
     router.refresh();
   }

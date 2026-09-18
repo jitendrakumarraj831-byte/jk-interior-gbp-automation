@@ -138,7 +138,7 @@ export default function SettingsClient() {
   }
 
   async function signOut() {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    await api.post('/api/auth/logout').catch(() => undefined);
     router.replace('/login');
     router.refresh();
   }

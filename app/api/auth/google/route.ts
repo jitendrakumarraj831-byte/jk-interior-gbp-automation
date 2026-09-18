@@ -23,10 +23,17 @@ export const runtime = 'nodejs';
 
 export async function GET(request: Request) {
   return handleRoute('auth/google', async () => {
+    // Starting the OAuth flow is an admin action. A production deployment with
+    // no admin credentials cannot authorise anyone, so it is sent to the
+    // configuration error page rather than a sign-in form it cannot satisfy.
     try {
       assertAdmin(request);
-    } catch {
-      return NextResponse.redirect(new URL('/login?next=/dashboard/connection', request.url));
+    } catch (error) {
+      const destination =
+        error instanceof AppError && error.code === 'ADMIN_AUTH_NOT_CONFIGURED'
+          ? '/config-error'
+          : '/login?next=/dashboard/connection';
+      return NextResponse.redirect(new URL(destination, request.url));
     }
 
     let authUrl: string;

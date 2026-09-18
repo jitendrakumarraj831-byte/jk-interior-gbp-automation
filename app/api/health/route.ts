@@ -1,8 +1,9 @@
 /**
  * Health / readiness probe.
  *
- * Returns booleans only — never a secret, never a credential fragment. Safe to
- * hit publicly and safe to point an uptime monitor at.
+ * The one deliberately public endpoint. It returns booleans and a mode string
+ * only — never a secret, a credential fragment, a resource name or a hostname.
+ * Safe to point an uptime monitor at.
  */
 
 import { NextResponse } from 'next/server';
@@ -42,6 +43,8 @@ export async function GET() {
         aiConfigured: summary.aiConfigured,
         cronConfigured: summary.cronConfigured,
         adminAuthConfigured: summary.adminAuthConfigured,
+        // 'enforced' | 'misconfigured' | 'development_only'. Never a value.
+        adminAuthMode: summary.adminAuthMode,
         durableStore: summary.durableStore,
         storeKind: getStore().kind,
         storeReachable,
@@ -50,6 +53,15 @@ export async function GET() {
       gbpApiAccess: summary.googleConfigured
         ? 'configured'
         : 'awaiting_credentials_or_api_approval',
+      // Surfaced so a monitor can alarm on a deployment that is refusing to
+      // serve its dashboard because admin credentials were never set.
+      ...(summary.adminAuthMode === 'misconfigured'
+        ? {
+            status: 'degraded',
+            degradedReason:
+              'Admin authentication is not configured in production; admin routes are refusing requests.',
+          }
+        : {}),
     },
     { headers: { 'Cache-Control': 'no-store' } },
   );

@@ -13,6 +13,8 @@ export type AppErrorCode =
   | 'AI_FAILED'
   | 'VALIDATION_FAILED'
   | 'UNAUTHORIZED'
+  | 'ADMIN_AUTH_NOT_CONFIGURED'
+  | 'CSRF_FAILED'
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'STORE_ERROR'

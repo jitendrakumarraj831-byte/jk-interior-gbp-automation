@@ -28,10 +28,36 @@ export class ApiError extends Error {
   }
 }
 
+/** Methods the server guards with a double-submit CSRF token. */
+const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Reads the CSRF cookie the middleware issued. It is intentionally not
+ * httpOnly: echoing it back in a header is what proves the request came from a
+ * page on our own origin, which a cross-site attacker cannot do.
+ */
+function csrfToken(): string {
+  if (typeof document === 'undefined') return '';
+  for (const part of document.cookie.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === 'jk_csrf') return decodeURIComponent(rest.join('='));
+  }
+  return '';
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<ApiEnvelope<T>> {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init?.headers as Record<string, string>) ?? {}),
+  };
+  if (STATE_CHANGING.has(method)) headers['x-csrf-token'] = csrfToken();
+
   const response = await fetch(url, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers,
+    // Same-origin only: never let these credentials ride to another host.
+    credentials: 'same-origin',
     cache: 'no-store',
   });
 

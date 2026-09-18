@@ -111,6 +111,41 @@ export function isAdminAuthConfigured(): boolean {
   return Boolean(e.ADMIN_PASSWORD && e.SESSION_SECRET);
 }
 
+/**
+ * Whether admin authentication is enforced, and if not, why.
+ *
+ *  - `enforced`         credentials present; every admin surface requires a session.
+ *  - `misconfigured`    PRODUCTION with credentials missing. The app refuses to
+ *                       serve admin surfaces at all — it fails closed rather than
+ *                       falling back to unauthenticated access.
+ *  - `development_only` local development with no credentials set. Convenience
+ *                       only; unreachable in production by construction.
+ */
+export type AdminAuthMode = 'enforced' | 'misconfigured' | 'development_only';
+
+export function adminAuthMode(): AdminAuthMode {
+  if (isAdminAuthConfigured()) return 'enforced';
+  return isProduction() ? 'misconfigured' : 'development_only';
+}
+
+/**
+ * True when the deployment is production but ADMIN_PASSWORD / SESSION_SECRET
+ * are absent. Admin routes and the dashboard must refuse to serve in this
+ * state — never fall through to unauthenticated access.
+ */
+export function isAdminAuthMisconfigured(): boolean {
+  return adminAuthMode() === 'misconfigured';
+}
+
+/** Names of the admin-auth variables that are missing. Names only, no values. */
+export function missingAdminAuthVars(): string[] {
+  const e = env();
+  const missing: string[] = [];
+  if (!e.ADMIN_PASSWORD) missing.push('ADMIN_PASSWORD');
+  if (!e.SESSION_SECRET) missing.push('SESSION_SECRET');
+  return missing;
+}
+
 export function isDurableStoreConfigured(): boolean {
   const e = env();
   return Boolean(e.UPSTASH_REDIS_REST_URL && e.UPSTASH_REDIS_REST_TOKEN);
@@ -146,6 +181,7 @@ export type ConfigSummary = {
   aiConfigured: boolean;
   cronConfigured: boolean;
   adminAuthConfigured: boolean;
+  adminAuthMode: AdminAuthMode;
   durableStore: boolean;
   autoPublishReplies: boolean;
   pinnedLocation: boolean;
@@ -161,6 +197,7 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
     aiConfigured: isAiConfigured(),
     cronConfigured: isCronConfigured(),
     adminAuthConfigured: isAdminAuthConfigured(),
+    adminAuthMode: adminAuthMode(),
     durableStore: isDurableStoreConfigured(),
     autoPublishReplies: e.AUTO_PUBLISH_REPLIES,
     pinnedLocation: Boolean(e.GBP_LOCATION_NAME),
@@ -188,9 +225,15 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
   if (!isCronConfigured()) {
     warnings.push('CRON_SECRET is not set — cron endpoints reject every request until it is.');
   }
-  if (!isAdminAuthConfigured() && isProduction()) {
+  if (isAdminAuthMisconfigured()) {
     warnings.push(
-      'ADMIN_PASSWORD / SESSION_SECRET are not set — the dashboard is publicly reachable. Set both before going live.',
+      `Admin authentication is not configured in production (missing ${missingAdminAuthVars().join(
+        ' and ',
+      )}). The dashboard and every admin API are refusing requests until both are set.`,
+    );
+  } else if (!isAdminAuthConfigured()) {
+    warnings.push(
+      'ADMIN_PASSWORD / SESSION_SECRET are not set. That is allowed in local development only — production refuses to serve without them.',
     );
   }
   if (!isDurableStoreConfigured()) {

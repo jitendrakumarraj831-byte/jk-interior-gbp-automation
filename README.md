@@ -47,7 +47,7 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | Scheduled posts via Vercel Cron | Built |
 | Performance / statistics | Built — needs API approval |
 | Secure cron endpoints | Built |
-| Admin dashboard (light, mobile-first) | Built |
+| Admin dashboard (light, mobile-first) | Built — password required in production |
 | Health / status monitoring | Built — `/api/health` works today |
 
 ### The review reply workflow
@@ -113,8 +113,15 @@ Copy `.env.example` → `.env.local`. **Never commit `.env.local`.**
 | Variable | Purpose |
 | --- | --- |
 | `CRON_SECRET` | Authenticates every `/api/cron/*` request. Without it, cron endpoints reject everything. |
-| `ADMIN_PASSWORD` | Locks the dashboard and all write APIs |
-| `SESSION_SECRET` | Signs the admin session cookie |
+| `ADMIN_PASSWORD` | **Mandatory in production.** The dashboard password. |
+| `SESSION_SECRET` | **Mandatory in production.** Signs the admin session cookie. |
+
+> **Production will not serve without `ADMIN_PASSWORD` and `SESSION_SECRET`.**
+> A production deployment missing either one refuses every dashboard route and
+> every admin API (`503 ADMIN_AUTH_NOT_CONFIGURED`) and serves a configuration
+> error page instead. It does **not** fall back to unauthenticated access.
+> Local development may run without them as a convenience; that path is
+> unreachable once `VERCEL_ENV` or `NODE_ENV` says production.
 
 ### Optional
 
@@ -248,7 +255,10 @@ ends two days before today.
 2. In Vercel, **Add New → Project** and import the repository.
 3. Framework preset: **Next.js** (auto-detected). No build overrides needed.
 4. Add the environment variables (next section) **before** the first deploy, or
-   redeploy after adding them.
+   redeploy after adding them. `ADMIN_PASSWORD` and `SESSION_SECRET` are
+   mandatory — without them the deployment builds and starts, but every
+   dashboard route and admin API refuses to serve and `/config-error` explains
+   what is missing.
 5. Deploy. `vercel.json` registers the cron jobs automatically.
 
 The build does not require any Google credentials — it succeeds with an empty
@@ -274,8 +284,10 @@ UPSTASH_REDIS_REST_URL     (recommended)
 UPSTASH_REDIS_REST_TOKEN   (recommended)
 ```
 
-All of these are server-side only. None is prefixed `NEXT_PUBLIC_`, so none
-reaches the browser. Redeploy after changing any of them.
+`ADMIN_PASSWORD` and `SESSION_SECRET` are **required in production** — see the
+callout in §3. All of these are server-side only. None is prefixed
+`NEXT_PUBLIC_`, so none reaches the browser. Redeploy after changing any of
+them.
 
 ---
 
@@ -351,11 +363,21 @@ No code changes are required at any step.
   compared on callback; expires after 10 minutes.
 - **Refresh token never displayed** — stored server-side, reported to the UI as
   a boolean only.
+- **Authentication fails closed** — production without `ADMIN_PASSWORD` /
+  `SESSION_SECRET` serves `/config-error` and returns `503` from every admin
+  API. There is no unauthenticated production path.
 - **Admin session** — HMAC-signed, httpOnly, `SameSite=Lax`, `Secure` in
-  production, 12-hour expiry. Verified server-side in the dashboard layout and
-  in every API route via `assertAdmin()`; middleware only handles redirects.
-- **Constant-time comparison** for the admin password, cron secret and OAuth
-  state.
+  production, 12-hour expiry. The session cookie is unreachable from JavaScript.
+  Verified server-side in the dashboard layout and in every API route via
+  `assertAdmin()`; middleware only handles redirects and cannot be the sole gate.
+- **CSRF protection** on every state-changing admin request — a strict `Origin`
+  check (falling back to `Referer`) plus a double-submit token: the `jk_csrf`
+  cookie must match the `x-csrf-token` header. The CSRF cookie is deliberately
+  readable by JavaScript — that is what makes the double-submit work — and is a
+  random per-browser nonce that is not derived from any secret and grants
+  nothing on its own.
+- **Constant-time comparison** for the admin password, cron secret, CSRF token
+  and OAuth state.
 - **Cron authentication** on every `/api/cron/*` route, before any work.
 - **Input validation** — every request body parsed with Zod; URLs restricted to
   `http`/`https`; text sanitised and length-capped before storage.
@@ -368,13 +390,28 @@ No code changes are required at any step.
 - **No open redirect** — `?next=` on `/login` accepts same-origin paths only.
 - **`robots: noindex`** on the whole app.
 
+### Who can reach what
+
+| Surface | Requirement |
+| --- | --- |
+| `/api/health` | **Public.** Booleans and a mode string only — no secrets, no resource names, no hostnames. |
+| `/api/auth/google/callback` | **Public by necessity** — Google redirects here before a session can exist. Protected by the signed, cookie-bound, 10-minute OAuth `state`. |
+| `/api/auth/login` | Same-origin only. No session needed (it creates one). |
+| `/config-error` | Public, and only reachable when production is misconfigured. Names the missing variables, never their values. |
+| `/dashboard/*` | Valid admin session. |
+| `/api/reviews`, `/api/reviews/reply*`, `/api/posts*`, `/api/performance`, `/api/settings`, `/api/accounts`, `/api/status`, `/api/auth/google*` | Valid admin session; mutations additionally need Origin + CSRF token. |
+| `/api/cron/*` | `CRON_SECRET` bearer token. A browser session grants no access. |
+
 **Your responsibilities**
 
 - Never commit `.env.local`. It is git-ignored — keep it that way.
 - Never paste a refresh token, client secret, `OPENAI_API_KEY` or `CRON_SECRET`
   into an issue, a commit, a screenshot or a chat.
-- Set `ADMIN_PASSWORD` and `SESSION_SECRET` before going live. Without them the
-  dashboard runs in **open mode** and warns you on every page.
+- Set `ADMIN_PASSWORD` and `SESSION_SECRET` before going live. The app enforces
+  this: production refuses to serve the dashboard or any admin API without them.
+- Send state-changing admin requests from the dashboard itself. Scripts that
+  post directly must supply both the session cookie and a matching
+  `x-csrf-token` header, from a same-origin request.
 - Rotate `CRON_SECRET` and `SESSION_SECRET` periodically.
 - Revoke a leaked refresh token at
   [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
@@ -483,8 +520,17 @@ Google notice, not an error.
 | `POST` | `/api/auth/login` `/logout` | — | Admin session |
 | `GET` `POST` | `/api/cron/*` | `CRON_SECRET` | Automation tasks |
 
-"admin" means an ADMIN_PASSWORD session when one is configured; with no
-`ADMIN_PASSWORD` set the app runs in open mode and says so.
+**"admin"** means a valid signed session cookie. In production this is always
+required — a deployment without `ADMIN_PASSWORD` / `SESSION_SECRET` returns
+`503 ADMIN_AUTH_NOT_CONFIGURED` for every admin route rather than allowing
+access. In local development without those variables the check is relaxed, but
+the cross-origin check still applies.
+
+State-changing admin requests (`POST` / `PUT` / `PATCH` / `DELETE`) additionally
+require a same-origin `Origin` header **and** an `x-csrf-token` header matching
+the `jk_csrf` cookie. `GET` requests are exempt. `/api/cron/*` uses the
+`CRON_SECRET` bearer token instead and is exempt from both, since Vercel Cron is
+not a browser and sends no `Origin`.
 
 ---
 
@@ -508,6 +554,17 @@ and connect again.
 **Drafts and posts disappear**
 The in-memory store was wiped by a cold start. Configure
 `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+**Every page redirects to `/config-error`**
+The deployment is in production with `ADMIN_PASSWORD` or `SESSION_SECRET`
+missing. That is the fail-closed path, not a bug. The page lists exactly which
+variables to add. `/api/health` reports `"adminAuthMode": "misconfigured"` and
+`"status": "degraded"`.
+
+**A `POST` from curl or a script returns 403 `CSRF_FAILED`**
+State-changing admin requests need a same-origin `Origin` header and an
+`x-csrf-token` header matching the `jk_csrf` cookie. The dashboard does this
+automatically. Cron endpoints are exempt — use the `CRON_SECRET` bearer token.
 
 **Cron returns 401 / 503**
 `CRON_SECRET` is missing, or the header does not match. Check the variable in

@@ -8,15 +8,20 @@
 
 import { z } from 'zod';
 
-import { isAdminAuthConfigured, env } from '@/lib/config';
+import { isAdminAuthConfigured, isAdminAuthMisconfigured, env } from '@/lib/config';
 import { AppError } from '@/lib/errors';
 import { log } from '@/lib/logger';
 import {
   ADMIN_COOKIE,
+  adminAuthMisconfiguredError,
+  assertSameOrigin,
   createSessionToken,
+  CSRF_COOKIE,
+  csrfCookieOptions,
   handleRoute,
   ok,
   parseJson,
+  randomToken,
   safeEqual,
   sessionCookieOptions,
 } from '@/lib/security';
@@ -28,6 +33,12 @@ const bodySchema = z.object({ password: z.string().min(1).max(512) });
 
 export async function POST(request: Request) {
   return handleRoute('auth/login', async () => {
+    // A login form posted from another origin is never legitimate. Checked
+    // before anything else so a cross-site page cannot probe the password.
+    assertSameOrigin(request);
+
+    if (isAdminAuthMisconfigured()) throw adminAuthMisconfiguredError();
+
     if (!isAdminAuthConfigured()) {
       throw new AppError(
         'UNAUTHORIZED',
@@ -44,6 +55,9 @@ export async function POST(request: Request) {
 
     const response = ok({ signedIn: true }, 'Signed in.');
     response.cookies.set(ADMIN_COOKIE, createSessionToken(), sessionCookieOptions());
+    // Issue a fresh CSRF token alongside the new session so the very first
+    // mutating request after sign-in already has a matching pair.
+    response.cookies.set(CSRF_COOKIE, randomToken(), csrfCookieOptions());
     return response;
   });
 }

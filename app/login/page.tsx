@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-import { isAdminAuthConfigured } from '@/lib/config';
+import { adminAuthMode } from '@/lib/config';
 import LoginForm from './login-form';
 
 export const dynamic = 'force-dynamic';
@@ -12,8 +12,14 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
-  // With no ADMIN_PASSWORD configured there is nothing to sign in to.
-  if (!isAdminAuthConfigured()) redirect('/dashboard');
+  const mode = adminAuthMode();
+
+  // Production without credentials cannot offer a sign-in — there is no
+  // password to check against. Say so plainly instead of showing a dead form.
+  if (mode === 'misconfigured') redirect('/config-error');
+
+  // Local development with no password set: nothing to sign in to.
+  if (mode === 'development_only') redirect('/dashboard');
 
   const { next } = await searchParams;
   // Only same-origin relative paths are accepted, so ?next= cannot be used as
