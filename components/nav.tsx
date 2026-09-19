@@ -34,6 +34,7 @@ import {
   PostIcon,
   SettingsIcon,
   ShieldIcon,
+  SocialIcon,
   SparkIcon,
   StarIcon,
 } from './icons';
@@ -76,6 +77,13 @@ export const SECONDARY_NAV: NavItem[] = [
     short: 'Google',
     icon: GoogleIcon,
     tone: 'google',
+  },
+  {
+    href: '/dashboard/social',
+    label: 'Social Automation',
+    short: 'Social',
+    icon: SocialIcon,
+    tone: 'info',
   },
   {
     href: '/dashboard/automation',

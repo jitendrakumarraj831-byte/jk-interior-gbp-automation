@@ -18,9 +18,12 @@ import {
   CalendarIcon,
   ChartIcon,
   CheckIcon,
+  ClockIcon,
   InboxIcon,
+  LockIcon,
   PostIcon,
   RefreshIcon,
+  SocialIcon,
   SparkIcon,
   StarIcon,
 } from '@/components/icons';
@@ -45,6 +48,17 @@ const CATEGORY_META: Record<NotificationCategory, { label: string; icon: React.R
   google_api_issue: { label: 'Google API issue', icon: <AlertIcon size={16} />, tone: 'danger' },
   performance_report_ready: { label: 'Performance updated', icon: <ChartIcon size={16} />, tone: 'success' },
   profile_update: { label: 'Profile update', icon: <InboxIcon size={16} />, tone: 'neutral' },
+  meta_connected: { label: 'Meta connected', icon: <SocialIcon size={16} />, tone: 'success' },
+  meta_disconnected: { label: 'Meta disconnected', icon: <SocialIcon size={16} />, tone: 'neutral' },
+  social_draft_created: { label: 'Social draft created', icon: <SparkIcon size={16} />, tone: 'ai' },
+  social_post_approved: { label: 'Social post approved', icon: <CheckIcon size={16} />, tone: 'success' },
+  social_post_scheduled: { label: 'Social post scheduled', icon: <CalendarIcon size={16} />, tone: 'info' },
+  social_post_published: { label: 'Social post published', icon: <PostIcon size={16} />, tone: 'cyan' },
+  social_post_failed: { label: 'Social post failed', icon: <AlertIcon size={16} />, tone: 'danger' },
+  social_post_skipped: { label: 'Social post skipped', icon: <ClockIcon size={16} />, tone: 'warning' },
+  meta_rate_limited: { label: 'Meta rate limited', icon: <ClockIcon size={16} />, tone: 'warning' },
+  meta_token_expired: { label: 'Meta token expired', icon: <LockIcon size={16} />, tone: 'danger' },
+  meta_permission_error: { label: 'Meta permission error', icon: <AlertIcon size={16} />, tone: 'danger' },
 };
 
 type Payload = { notifications: AppNotification[]; unread: number };
