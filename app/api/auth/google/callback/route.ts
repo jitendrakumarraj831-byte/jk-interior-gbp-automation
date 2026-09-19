@@ -8,6 +8,7 @@
 
 import { NextResponse } from 'next/server';
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { exchangeCodeForTokens } from '@/lib/google-auth';
 import { log } from '@/lib/logger';
 import { handleRoute, OAUTH_STATE_COOKIE, readCookie, verifyOAuthState } from '@/lib/security';
@@ -58,6 +59,13 @@ export async function GET(request: Request) {
 
     try {
       const meta = await exchangeCodeForTokens(code);
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'google_connected',
+        resource: 'google-account',
+        status: 'success',
+        source: 'dashboard',
+      });
       return redirectToConnection(request, {
         connect: 'success',
         ...(meta.googleAccountEmail ? { account: meta.googleAccountEmail } : {}),

@@ -13,6 +13,7 @@
 import { z } from 'zod';
 
 import { MAX_REPLY_CHARS } from '@/lib/ai-reply';
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { AppError } from '@/lib/errors';
 import {
   deleteDraft,
@@ -99,6 +100,14 @@ export async function POST(request: Request) {
 
     // Reuse the existing id so regeneration replaces rather than duplicates.
     const saved = await saveDraft(existing ? { ...draft, id: existing.id } : draft);
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'review_draft_generated',
+      resource: saved.id,
+      status: 'success',
+      source: 'dashboard',
+      detail: body.regenerate ? 'Regenerated' : undefined,
+    });
     return ok({ draft: saved }, 'Draft generated. Review it before publishing.');
   });
 }
@@ -130,6 +139,16 @@ export async function PATCH(request: Request) {
       error: undefined,
     });
 
+    if (body.action === 'approve' || body.action === 'unapprove') {
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: body.action === 'approve' ? 'review_draft_approved' : 'review_draft_unapproved',
+        resource: saved.id,
+        status: 'success',
+        source: 'dashboard',
+      });
+    }
+
     return ok(
       { draft: saved },
       status === 'approved'
@@ -149,6 +168,13 @@ export async function DELETE(request: Request) {
     if (!draft) throw new AppError('NOT_FOUND', 'Draft not found.', 404);
 
     await deleteDraft(id);
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'review_draft_discarded',
+      resource: id,
+      status: 'success',
+      source: 'dashboard',
+    });
     return ok({ deleted: id }, 'Draft discarded.');
   });
 }

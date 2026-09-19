@@ -197,6 +197,87 @@ export type AutomationRun = {
   details?: Record<string, number | string | boolean>;
 };
 
+/* ----------------------------- notifications ----------------------------- */
+
+export type NotificationCategory =
+  | 'new_review'
+  | 'ai_draft_ready'
+  | 'post_scheduled'
+  | 'post_published'
+  | 'google_api_issue'
+  | 'performance_report_ready'
+  | 'profile_update';
+
+export type AppNotification = {
+  id: string;
+  category: NotificationCategory;
+  title: string;
+  message: string;
+  /** Dashboard path this notification points at. */
+  href?: string;
+  /** Stable key that prevents the same event from ever notifying twice. */
+  dedupeKey: string;
+  read: boolean;
+  createdAt: string;
+  readAt?: string;
+};
+
+/* -------------------------------- audit log ------------------------------- */
+
+export type AuditAction =
+  | 'review_draft_generated'
+  | 'review_draft_approved'
+  | 'review_draft_unapproved'
+  | 'review_draft_discarded'
+  | 'review_reply_published'
+  | 'post_created'
+  | 'post_scheduled'
+  | 'post_updated'
+  | 'post_deleted'
+  | 'post_published'
+  | 'automation_executed'
+  | 'settings_updated'
+  | 'google_connected'
+  | 'google_disconnected';
+
+export type AuditStatus = 'success' | 'failure';
+
+export type AuditLogEntry = {
+  id: string;
+  timestamp: string;
+  /** Non-reversible session identifier, e.g. "admin:3f9a1c" — never a token. */
+  actor: string;
+  action: AuditAction;
+  resource: string;
+  status: AuditStatus;
+  source: 'dashboard' | 'cron';
+  /** Safe, human-readable context. Never a secret or raw provider payload. */
+  detail?: string;
+};
+
+/* ----------------------------- system health ------------------------------ */
+
+export type HealthStatus =
+  | 'healthy'
+  | 'configured'
+  | 'pending'
+  | 'not_configured'
+  | 'rate_limited'
+  | 'error';
+
+export type HealthCheck = {
+  id: string;
+  label: string;
+  status: HealthStatus;
+  detail: string;
+  checkedAt: string;
+};
+
+export type SystemHealthReport = {
+  checks: HealthCheck[];
+  generatedAt: string;
+};
+
 export type DashboardSummary = {
   connection: { connected: boolean; label: string; detail: string };
   newReviews: number;

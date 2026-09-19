@@ -11,6 +11,7 @@
  */
 
 import { generateReplyDraft } from './ai-reply';
+import { recordAudit } from './audit';
 import { env, isAiConfigured, isMockModeActive } from './config';
 import { recordAccessFailure, shouldSkipGoogleCalls } from './gbp-access';
 import {
@@ -23,8 +24,10 @@ import { resolveTarget } from './connection';
 import { AppError } from './errors';
 import { createLocalPost, fetchPerformance, listReviews, publishReviewReply } from './google-business';
 import { log } from './logger';
+import { notify } from './notifications';
 import {
   findDraftByReviewId,
+  getCachedReviews,
   getSettings,
   listDrafts,
   listDuePosts,
@@ -34,6 +37,7 @@ import {
   savePost,
   setCachedPerformance,
   setCachedReviews,
+  type ReviewCache,
 } from './repository';
 import type { AutomationRun, AutomationRunName, ReplyDraft, Review } from './types';
 
@@ -63,12 +67,28 @@ async function shouldSkipGbpWork(): Promise<boolean> {
   return shouldSkipGoogleCalls();
 }
 
-/** Caches a classified failure so the next cron run can skip early. */
+/**
+ * Caches a classified failure so the next cron run can skip early, and — for
+ * a genuine fault rather than the expected pending/rate-limited states —
+ * raises a "Google API Issue" notification. Deduped to once per code per day
+ * so a run failing every few minutes does not flood the notification list.
+ */
 async function noteGoogleFailure(error: unknown): Promise<void> {
-  if (error instanceof AppError) await recordAccessFailure(error.code);
+  if (!(error instanceof AppError)) return;
+  const status = await recordAccessFailure(error.code);
+  if (status !== 'auth_error' && status !== 'permission_error' && status !== 'error') return;
+
+  const day = new Date().toISOString().slice(0, 10);
+  await notify({
+    category: 'google_api_issue',
+    title: 'Google Business Profile API issue',
+    message: error.message,
+    href: '/dashboard/health',
+    dedupeKey: `gbp-issue:${error.code}:${day}`,
+  });
 }
 
-/** Runs a task, records the outcome, and never lets it throw past the caller. */
+/** Runs a task, records the outcome + an audit entry, and never lets it throw past the caller. */
 async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): Promise<AutomationRun> {
   const startedAt = new Date().toISOString();
   let result: TaskResult;
@@ -94,7 +114,36 @@ async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): 
   await recordRun(run).catch(() => {
     /* the run log is best-effort; never fail a task because of it */
   });
+  await recordAudit({
+    actor: 'cron',
+    action: 'automation_executed',
+    resource: task,
+    status: result.ok ? 'success' : 'failure',
+    source: 'cron',
+    detail: result.summary,
+  });
   return run;
+}
+
+/**
+ * Notifies about reviews that were not present the last time we synced.
+ * Skipped entirely on the very first sync (no `previousCache` yet) — with no
+ * baseline, every review would look "new" and flood the notification list.
+ */
+async function notifyNewReviews(reviews: Review[], previousCache: ReviewCache | null): Promise<void> {
+  if (!previousCache) return;
+  const previousIds = new Set(previousCache.reviews.map((r) => r.reviewId));
+  const fresh = reviews.filter((r) => !previousIds.has(r.reviewId));
+
+  for (const review of fresh) {
+    await notify({
+      category: 'new_review',
+      title: 'New Google review',
+      message: `${review.reviewerName} left a ${review.starRating}★ review.`,
+      href: '/dashboard/reviews',
+      dedupeKey: `review:${review.reviewId}`,
+    });
+  }
 }
 
 /* ------------------------------ sync reviews ----------------------------- */
@@ -118,6 +167,7 @@ export async function syncReviews(): Promise<AutomationRun> {
     if (await shouldSkipGbpWork()) return skippedForPendingAccess();
 
     const drafts = await listDrafts();
+    const previousCache = await getCachedReviews();
 
     // Mock mode serves simulated reviews and never touches Google.
     if (isMockModeActive()) {
@@ -129,6 +179,7 @@ export async function syncReviews(): Promise<AutomationRun> {
         fetchedAt: new Date().toISOString(),
         locationPath: 'mock',
       });
+      await notifyNewReviews(mock.reviews, previousCache);
       return {
         ok: true,
         summary: `Synced ${mock.reviews.length} mock reviews (no Google call).`,
@@ -153,6 +204,7 @@ export async function syncReviews(): Promise<AutomationRun> {
       fetchedAt: new Date().toISOString(),
       locationPath: target.locationPath,
     });
+    await notifyNewReviews(result.reviews, previousCache);
 
     const unanswered = result.reviews.filter((r) => !r.existingReply).length;
     return {
@@ -216,6 +268,13 @@ export async function generateDrafts(): Promise<AutomationRun> {
         const draft = await createDraftForReview(review);
         await saveDraft(draft);
         created += 1;
+        await notify({
+          category: 'ai_draft_ready',
+          title: 'AI reply draft ready',
+          message: `A draft reply is ready for ${review.reviewerName}'s review.`,
+          href: '/dashboard/drafts',
+          dedupeKey: `draft-ready:${draft.id}`,
+        });
       } catch (error) {
         failed += 1;
         log.warn('tasks', 'Could not draft a reply for a review', {
@@ -302,12 +361,27 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
           error: undefined,
         });
         published += 1;
+        await recordAudit({
+          actor: 'cron',
+          action: 'review_reply_published',
+          resource: draft.id,
+          status: 'success',
+          source: 'cron',
+          detail: 'Auto-published (AUTO_PUBLISH_REPLIES / settings toggle is on).',
+        });
       } catch (error) {
         failed += 1;
         await saveDraft({
           ...draft,
           status: 'publish_failed',
           error: error instanceof AppError ? error.message : 'Publishing failed.',
+        });
+        await recordAudit({
+          actor: 'cron',
+          action: 'review_reply_published',
+          resource: draft.id,
+          status: 'failure',
+          source: 'cron',
         });
       }
     }
@@ -359,6 +433,20 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
           error: undefined,
         });
         published += 1;
+        await notify({
+          category: 'post_published',
+          title: 'Post published',
+          message: `"${post.title}" is now live on Google Business Profile.`,
+          href: '/dashboard/posts',
+          dedupeKey: `post-published:${post.id}`,
+        });
+        await recordAudit({
+          actor: 'cron',
+          action: 'post_published',
+          resource: post.id,
+          status: 'success',
+          source: 'cron',
+        });
       } catch (error) {
         failed += 1;
         // Stays 'failed', never 'published' — we do not claim a post went live.
@@ -366,6 +454,13 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
           ...post,
           status: 'failed',
           error: error instanceof AppError ? error.message : 'Publishing failed.',
+        });
+        await recordAudit({
+          actor: 'cron',
+          action: 'post_published',
+          resource: post.id,
+          status: 'failure',
+          source: 'cron',
         });
       }
     }
@@ -400,6 +495,13 @@ export async function syncPerformance(days = 30): Promise<AutomationRun> {
       throw error;
     }
     await setCachedPerformance(snapshot);
+    await notify({
+      category: 'performance_report_ready',
+      title: 'Performance data updated',
+      message: `Performance synced through ${snapshot.rangeEnd}.`,
+      href: '/dashboard/performance',
+      dedupeKey: `performance:${snapshot.rangeEnd}`,
+    });
 
     const interactions = snapshot.series
       .filter((s) =>

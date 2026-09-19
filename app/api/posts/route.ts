@@ -11,11 +11,13 @@
 
 import { z } from 'zod';
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { isMockModeActive } from '@/lib/config';
 import { simulatePostPublish } from '@/lib/gbp-mock';
 import { resolveTarget } from '@/lib/connection';
 import { AppError } from '@/lib/errors';
 import { createLocalPost } from '@/lib/google-business';
+import { notify } from '@/lib/notifications';
 import { listPosts, newId, savePost } from '@/lib/repository';
 import { assertAdmin, handleRoute, httpUrlSchema, ok, parseJson, sanitizeText } from '@/lib/security';
 import type { GbpPost } from '@/lib/types';
@@ -90,6 +92,22 @@ export async function POST(request: Request) {
 
     if (body.action !== 'publish_now') {
       const saved = await savePost(post);
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: body.action === 'schedule' ? 'post_scheduled' : 'post_created',
+        resource: saved.id,
+        status: 'success',
+        source: 'dashboard',
+      });
+      if (body.action === 'schedule') {
+        await notify({
+          category: 'post_scheduled',
+          title: 'Post scheduled',
+          message: `"${saved.title}" is scheduled to publish.`,
+          href: '/dashboard/scheduled',
+          dedupeKey: `post-scheduled:${saved.id}`,
+        });
+      }
       return ok(
         { post: saved },
         body.action === 'schedule'
@@ -110,10 +128,24 @@ export async function POST(request: Request) {
         googlePostName,
         publishedAt: new Date().toISOString(),
       });
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'post_published',
+        resource: saved.id,
+        status: 'success',
+        source: 'dashboard',
+      });
       return ok({ post: saved }, 'Post published to Google Business Profile.');
     } catch (error) {
       const message = error instanceof AppError ? error.message : 'Publishing failed.';
       await savePost({ ...post, status: 'failed', error: message });
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'post_published',
+        resource: post.id,
+        status: 'failure',
+        source: 'dashboard',
+      });
       throw error;
     }
   });

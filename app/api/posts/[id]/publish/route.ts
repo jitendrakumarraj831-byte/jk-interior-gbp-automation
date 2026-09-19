@@ -5,11 +5,13 @@
  * leaves the post in `failed`.
  */
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { isMockModeActive } from '@/lib/config';
 import { simulatePostPublish } from '@/lib/gbp-mock';
 import { resolveTarget } from '@/lib/connection';
 import { AppError } from '@/lib/errors';
 import { createLocalPost } from '@/lib/google-business';
+import { notify } from '@/lib/notifications';
 import { getPost, savePost } from '@/lib/repository';
 import { assertAdmin, handleRoute, ok } from '@/lib/security';
 
@@ -43,10 +45,31 @@ export async function POST(request: Request, context: Context) {
         publishedAt: new Date().toISOString(),
         error: undefined,
       });
+      await notify({
+        category: 'post_published',
+        title: 'Post published',
+        message: `"${saved.title}" is now live on Google Business Profile.`,
+        href: '/dashboard/posts',
+        dedupeKey: `post-published:${saved.id}`,
+      });
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'post_published',
+        resource: saved.id,
+        status: 'success',
+        source: 'dashboard',
+      });
       return ok({ post: saved }, 'Post published to Google Business Profile.');
     } catch (error) {
       const message = error instanceof AppError ? error.message : 'Publishing failed.';
       await savePost({ ...post, status: 'failed', error: message });
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'post_published',
+        resource: post.id,
+        status: 'failure',
+        source: 'dashboard',
+      });
       throw error;
     }
   });

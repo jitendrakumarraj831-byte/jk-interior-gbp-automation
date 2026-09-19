@@ -48,6 +48,9 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | Performance / statistics | Built — needs API approval |
 | Secure cron endpoints | Built |
 | Admin dashboard (light, mobile-first) | Built — password required in production |
+| Notification Center (new reviews, drafts, posts, API issues, performance) | Built — durable with Upstash |
+| Audit log (every reply/post/automation action) | Built — durable with Upstash |
+| System Health Center | Built — reads existing status, no extra Google/AI calls |
 | Health / status monitoring | Built — `/api/health` works today |
 
 ### While Business Profile API access is pending
@@ -473,7 +476,7 @@ No code changes are required at any step.
 | `/api/auth/login` | Same-origin only. No session needed (it creates one). |
 | `/config-error` | Public, and only reachable when production is misconfigured. Names the missing variables, never their values. |
 | `/dashboard/*` | Valid admin session. |
-| `/api/reviews`, `/api/reviews/reply*`, `/api/posts*`, `/api/performance`, `/api/settings`, `/api/accounts`, `/api/status`, `/api/auth/google*` | Valid admin session; mutations additionally need Origin + CSRF token. |
+| `/api/reviews`, `/api/reviews/reply*`, `/api/posts*`, `/api/performance`, `/api/settings`, `/api/accounts`, `/api/status`, `/api/auth/google*`, `/api/notifications`, `/api/audit`, `/api/system-health` | Valid admin session; mutations additionally need Origin + CSRF token. |
 | `/api/cron/*` | `CRON_SECRET` bearer token. A browser session grants no access. |
 
 **Your responsibilities**
@@ -503,6 +506,7 @@ app/
     page.tsx + overview.tsx      Overview cards
     reviews/  drafts/  posts/  scheduled/
     performance/  connection/  automation/  settings/
+    notifications/  health/  audit/
   api/
     health/                      Public health probe
     auth/google/                 OAuth start
@@ -519,6 +523,9 @@ app/
     performance/                 Daily metrics
     status/                      Dashboard summary
     settings/                    Runtime settings
+    notifications/               Notification Center — list, mark read
+    audit/                       Audit log — read-only
+    system-health/               System Health Center — aggregated status
     cron/sync                    Daily: reviews → drafts → performance
     cron/publish-posts           Publish due posts
     cron/sync-reviews            Individual tasks, for manual triggering
@@ -535,6 +542,9 @@ lib/
   repository.ts      Drafts, posts, caches, run log, settings
   store.ts           Upstash Redis REST, or in-memory fallback
   connection.ts      Account/location resolution and connection state
+  notifications.ts   Notification Center — durable, deduped by event key
+  audit.ts           Audit log — non-reversible actor id, never a secret
+  system-health.ts   Aggregates existing status into one report — no new calls
   errors.ts          Error taxonomy + Google 403 classification
   logger.ts          Redacting logger
   types.ts           Shared domain types
@@ -588,6 +598,10 @@ Google notice, not an error.
 | `POST` | `/api/posts/{id}/publish` | admin | Publish a post |
 | `GET` | `/api/performance?days=30` | admin | Daily metrics |
 | `GET` `PATCH` | `/api/settings` | admin | Runtime settings |
+| `GET` | `/api/notifications` | admin | Notification Center — list + unread count |
+| `PATCH` | `/api/notifications` | admin | Mark one (`{id}`) or every (`{all:true}`) notification read |
+| `GET` | `/api/audit` | admin | Audit log — read-only |
+| `GET` | `/api/system-health` | admin | System Health Center — aggregated status, no new Google/AI calls |
 | `GET` | `/api/auth/google` | admin | Start OAuth |
 | `GET` | `/api/auth/google/callback` | — | OAuth callback |
 | `POST` | `/api/auth/google/disconnect` | admin | Clear stored connection |
