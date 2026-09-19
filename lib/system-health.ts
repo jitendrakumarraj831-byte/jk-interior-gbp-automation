@@ -122,7 +122,13 @@ async function cronCheck(): Promise<HealthCheck> {
   if (!isCronConfigured()) {
     return check('cron', 'Automation / Cron', 'not_configured', 'CRON_SECRET is not set.');
   }
-  const tasks: AutomationRunName[] = ['sync-reviews', 'generate-drafts', 'publish-posts', 'sync-performance'];
+  const tasks: AutomationRunName[] = [
+    'sync-reviews',
+    'generate-drafts',
+    'publish-posts',
+    'publish-replies',
+    'sync-performance',
+  ];
   const runs = await Promise.all(tasks.map((t) => lastRunOf(t)));
   const recent = runs.filter((r): r is NonNullable<typeof r> => r != null);
   if (recent.length === 0) {
@@ -130,15 +136,22 @@ async function cronCheck(): Promise<HealthCheck> {
   }
   const dayMs = 24 * 60 * 60 * 1000;
   const stale = recent.every((r) => Date.now() - new Date(r.startedAt).getTime() > 2 * dayMs);
-  const failing = recent.some((r) => !r.ok);
+  // A genuine failure only — a skipped run (GBP access pending / rate limited,
+  // recorded by lib/tasks.ts with ok:true) is the system waiting correctly,
+  // never a reason to mark this red. lastRunOf() already returns each task's
+  // most recent run, so an old failure followed by a newer healthy run never
+  // counts here.
+  const failed = recent.filter((r) => !r.ok);
   if (stale) {
     return check('cron', 'Automation / Cron', 'error', 'No job has run in over 48 hours.');
   }
   return check(
     'cron',
     'Automation / Cron',
-    failing ? 'error' : 'healthy',
-    failing ? 'The most recent run of at least one job failed.' : 'Jobs are running on schedule.',
+    failed.length > 0 ? 'error' : 'healthy',
+    failed.length > 0
+      ? `${failed.map((r) => r.task).join(', ')} failed: ${failed[0]!.summary}`
+      : 'Jobs are running on schedule.',
   );
 }
 

@@ -212,11 +212,14 @@ describe('publish safety under mock mode', () => {
     expect(publishRoute).not.toMatch(/&&\s*!force/);
   });
 
-  it('12. cron records a skip rather than failing when access is pending', () => {
+  it('12. cron records a skip rather than failing when access is pending or rate limited', () => {
     expect(tasks).toContain("status: 'skipped'");
-    expect(tasks).toContain("reason: 'gbp_access_pending'");
+    expect(tasks).toContain("'gbp_access_pending'");
+    expect(tasks).toContain("'gbp_rate_limited'");
     // ok:true — a skipped job is correct behaviour, not a broken system.
-    expect(tasks).toContain('skippedForPendingAccess');
+    expect(tasks).toContain('skippedForAccessStatus');
+    // A rate-limited failure must be classified the same way, not re-thrown as a genuine error.
+    expect(tasks).toContain('isExpectedWait');
   });
 
   it('13. pending access never deletes the refresh token or disconnects', () => {

@@ -59,6 +59,7 @@ const TASK_META: Record<string, { label: string; icon: React.ReactNode; tone: To
   'sync-reviews': { label: 'Sync reviews', icon: <StarIcon size={16} />, tone: 'warning' },
   'generate-drafts': { label: 'Generate reply drafts', icon: <SparkIcon size={16} />, tone: 'ai' },
   'publish-posts': { label: 'Publish scheduled posts', icon: <CalendarIcon size={16} />, tone: 'info' },
+  'publish-replies': { label: 'Auto-publish approved replies', icon: <CheckCircleIcon size={16} />, tone: 'success' },
   'sync-performance': { label: 'Update performance', icon: <ChartIcon size={16} />, tone: 'success' },
 };
 
