@@ -143,6 +143,21 @@ describe('publishScheduledSocialPosts — rate limit handling', () => {
     const post = await repository.getSocialPost('post-1');
     expect(post?.status).toBe('scheduled');
   });
+
+  it('gives up and marks the post failed once maxRetries is reached, instead of retrying forever', async () => {
+    const { tasks, repository, settings, AppError } = await loadTasks();
+    await settings.saveSocialSettings({ facebookAutoPublish: true, maxRetries: 2 });
+    await repository.saveSocialPost(duePost({ retryCount: 1 })); // one attempt already made
+    publishMock.mockRejectedValue(new AppError('META_RATE_LIMITED', 'Still rate limited.', 503));
+
+    const run = await tasks.publishScheduledSocialPosts();
+
+    const post = await repository.getSocialPost('post-1');
+    expect(post?.status).toBe('failed');
+    expect(post?.retryCount).toBe(2);
+    expect(post?.lastError).toContain('gave up after 2 attempts');
+    expect(run.details?.failed).toBe(1);
+  });
 });
 
 describe('publishScheduledSocialPosts — genuine failures', () => {

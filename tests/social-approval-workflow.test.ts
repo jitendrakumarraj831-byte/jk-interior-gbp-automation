@@ -42,6 +42,7 @@ async function loadRoutes() {
     unschedule: await import('@/app/api/social/posts/[id]/unschedule/route'),
     duplicate: await import('@/app/api/social/posts/[id]/duplicate/route'),
     detail: await import('@/app/api/social/posts/[id]/route'),
+    settings: await import('@/lib/social/settings'),
   };
 }
 
@@ -157,6 +158,26 @@ describe('duplicate-content protection', () => {
     const second = await createDraft(routes, {
       facebookContent: { caption: 'A completely different post about PVC ceilings.', hashtags: [] },
     });
+    await routes.approve.POST(req('POST'), paramsOf(second.id));
+    const res = await routes.schedule.POST(
+      req('POST', { scheduledAt: new Date(Date.now() + 7200_000).toISOString() }),
+      paramsOf(second.id),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('allows a duplicate through when duplicateProtectionEnabled is off', async () => {
+    const routes = await loadRoutes();
+    await routes.settings.saveSocialSettings({ duplicateProtectionEnabled: false });
+
+    const first = await createDraft(routes);
+    await routes.approve.POST(req('POST'), paramsOf(first.id));
+    await routes.schedule.POST(
+      req('POST', { scheduledAt: new Date(Date.now() + 3600_000).toISOString() }),
+      paramsOf(first.id),
+    );
+
+    const second = await createDraft(routes, { title: 'Identical copy, protection off' });
     await routes.approve.POST(req('POST'), paramsOf(second.id));
     const res = await routes.schedule.POST(
       req('POST', { scheduledAt: new Date(Date.now() + 7200_000).toISOString() }),

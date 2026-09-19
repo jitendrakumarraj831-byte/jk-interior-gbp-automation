@@ -22,26 +22,8 @@ import {
   SparkIcon,
 } from '@/components/icons';
 import { Badge, Button, Callout, Card, PageHeader, Segmented } from '@/components/ui';
+import { CONTENT_TYPE_OPTIONS } from '@/lib/social/content-types';
 import type { SocialContentType, SocialLanguage, SocialPlatformTarget, SocialPost } from '@/lib/social/types';
-
-const CONTENT_TYPES: { value: SocialContentType; label: string }[] = [
-  { value: 'gypsum_false_ceiling', label: 'Gypsum False Ceiling' },
-  { value: 'pvc_ceiling', label: 'PVC Ceiling' },
-  { value: 'wpc_louvers', label: 'WPC Louvers' },
-  { value: 'wpc_fluted_panel', label: 'WPC Fluted Panel' },
-  { value: 'uv_marble_sheet', label: 'UV Marble Sheet' },
-  { value: 'tv_unit', label: 'TV Unit' },
-  { value: 'wall_paneling', label: 'Wall Paneling' },
-  { value: 'partition', label: 'Partition' },
-  { value: 'interior_project', label: 'Interior Project' },
-  { value: 'before_after', label: 'Before/After' },
-  { value: 'customer_project', label: 'Customer Project' },
-  { value: 'interior_tip', label: 'Interior Tip' },
-  { value: 'offer', label: 'Offer' },
-  { value: 'festival', label: 'Festival' },
-  { value: 'faq', label: 'FAQ' },
-  { value: 'local_business_promotion', label: 'Local Business Promotion' },
-];
 
 const inputClass =
   'w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-ink-900 outline-none transition-colors placeholder:text-ink-300 focus:border-brand-500';
@@ -144,7 +126,7 @@ export default function ContentStudioClient() {
                 onChange={(e) => setContentType(e.target.value as SocialContentType)}
                 className={inputClass}
               >
-                {CONTENT_TYPES.map((option) => (
+                {CONTENT_TYPE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

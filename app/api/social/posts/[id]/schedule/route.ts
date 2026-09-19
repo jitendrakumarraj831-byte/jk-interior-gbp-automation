@@ -12,6 +12,7 @@ import { notify } from '@/lib/notifications';
 import { assertAdmin, handleRoute, ok, parseJson } from '@/lib/security';
 import { findDuplicate } from '@/lib/social/duplicate';
 import { getSocialPost, saveSocialPost } from '@/lib/social/repository';
+import { getSocialSettings } from '@/lib/social/settings';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,13 +40,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       throw new AppError('VALIDATION_FAILED', 'Scheduled time must be in the future.', 400);
     }
 
-    const duplicate = await findDuplicate(post.contentHash, post.id);
-    if (duplicate) {
-      throw new AppError(
-        'META_DUPLICATE_CONTENT',
-        `This looks identical to "${duplicate.title}" (${duplicate.status}, ${duplicate.createdAt.slice(0, 10)}). Edit the content or confirm this is intentional before scheduling.`,
-        409,
-      );
+    const settings = await getSocialSettings();
+    if (settings.duplicateProtectionEnabled) {
+      const duplicate = await findDuplicate(post.contentHash, post.id);
+      if (duplicate) {
+        throw new AppError(
+          'META_DUPLICATE_CONTENT',
+          `This looks identical to "${duplicate.title}" (${duplicate.status}, ${duplicate.createdAt.slice(0, 10)}). Edit the content or confirm this is intentional before scheduling.`,
+          409,
+        );
+      }
     }
 
     const updated = { ...post, status: 'scheduled' as const, scheduledAt };

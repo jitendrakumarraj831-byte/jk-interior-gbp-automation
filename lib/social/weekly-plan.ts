@@ -17,6 +17,9 @@ export const DEFAULT_WEEKLY_PLAN: Record<number, SocialContentType> = {
 };
 
 /** Content type suggested for `date`'s day of week (local server time). */
-export function contentTypeForDay(date: Date = new Date()): SocialContentType {
-  return DEFAULT_WEEKLY_PLAN[date.getDay()] ?? 'interior_project';
+export function contentTypeForDay(
+  date: Date = new Date(),
+  plan: Record<number, SocialContentType> = DEFAULT_WEEKLY_PLAN,
+): SocialContentType {
+  return plan[date.getDay()] ?? DEFAULT_WEEKLY_PLAN[date.getDay()] ?? 'interior_project';
 }

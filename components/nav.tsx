@@ -87,6 +87,13 @@ export const SECONDARY_NAV: NavItem[] = [
     tone: 'info',
   },
   {
+    href: '/dashboard/social/history',
+    label: 'Social History',
+    short: 'History',
+    icon: InboxIcon,
+    tone: 'neutral',
+  },
+  {
     href: '/dashboard/content-studio',
     label: 'Content Studio',
     short: 'Studio',

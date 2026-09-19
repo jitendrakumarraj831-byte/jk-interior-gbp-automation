@@ -153,18 +153,41 @@ export async function publishScheduledSocialPosts(): Promise<AutomationRun> {
         const message = error instanceof AppError ? error.message : 'Publishing failed.';
 
         if (typeof code === 'string' && RETRYABLE_CODES.has(code)) {
-          // Leave it scheduled — cron retries next run. Stop hammering Meta
-          // with every other due post once we know it's rate limited/expired.
-          await saveSocialPost({ ...post, status: 'scheduled', lastError: undefined });
+          const retryCount = post.retryCount + 1;
+          // Retry policy: keep retrying transient errors on later cron runs,
+          // but not forever — past the configured limit a stuck post becomes
+          // a human problem, not a silent one.
+          if (retryCount >= settings.maxRetries) {
+            await saveSocialPost({
+              ...post,
+              status: 'failed',
+              retryCount,
+              lastError: `${message} (gave up after ${retryCount} attempts)`,
+            });
+            failed += 1;
+            await notify({
+              category: 'social_post_failed',
+              title: 'Social post failed — retry limit reached',
+              message: `"${post.title}" could not be published after ${retryCount} attempts: ${message}`,
+              href: '/dashboard/content-calendar',
+              dedupeKey: `social-failed-retries:${post.id}`,
+            });
+          } else {
+            // Leave it scheduled — cron retries next run.
+            await saveSocialPost({ ...post, status: 'scheduled', retryCount, lastError: undefined });
+            skipped += 1;
+          }
+          // Stop hammering Meta with every other due post once we know it's
+          // rate limited/expired — this condition affects the whole account,
+          // not just this one post.
           if (code === 'META_RATE_LIMITED' || code === 'META_TOKEN_EXPIRED') {
             await notifyMetaFailure(code, message);
           }
-          skipped += 1;
           await recordAudit({
             actor: 'cron',
-            action: 'social_post_skipped',
+            action: retryCount >= settings.maxRetries ? 'social_post_failed' : 'social_post_skipped',
             resource: post.id,
-            status: 'success',
+            status: retryCount >= settings.maxRetries ? 'failure' : 'success',
             source: 'cron',
             detail: message,
           });
@@ -219,7 +242,8 @@ export async function generateDailySocialContent(): Promise<AutomationRun> {
       return { ok: true, summary: 'No AI provider is configured — no draft generated.', details: { status: 'skipped' } };
     }
 
-    const contentType = contentTypeForDay();
+    const settings = await getSocialSettings();
+    const contentType = contentTypeForDay(new Date(), settings.weeklyPlan);
     const alreadyToday = (await listSocialPosts()).some(
       (p) => p.contentType === contentType && p.createdAt.slice(0, 10) === new Date().toISOString().slice(0, 10),
     );
