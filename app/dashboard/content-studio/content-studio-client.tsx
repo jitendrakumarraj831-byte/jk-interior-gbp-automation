@@ -9,12 +9,20 @@
  * Content Calendar, which takes this preview as its starting point.
  */
 
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import { api, ApiError } from '@/lib/client';
-import { AlertIcon, FacebookIcon, InstagramIcon, RefreshIcon, SparkIcon } from '@/components/icons';
+import {
+  AlertIcon,
+  CheckCircleIcon,
+  FacebookIcon,
+  InstagramIcon,
+  RefreshIcon,
+  SparkIcon,
+} from '@/components/icons';
 import { Badge, Button, Callout, Card, PageHeader, Segmented } from '@/components/ui';
-import type { SocialContentType, SocialLanguage, SocialPlatformTarget } from '@/lib/social/types';
+import type { SocialContentType, SocialLanguage, SocialPlatformTarget, SocialPost } from '@/lib/social/types';
 
 const CONTENT_TYPES: { value: SocialContentType; label: string }[] = [
   { value: 'gypsum_false_ceiling', label: 'Gypsum False Ceiling' },
@@ -49,6 +57,7 @@ type Generated = {
 };
 
 export default function ContentStudioClient() {
+  const router = useRouter();
   const [contentType, setContentType] = useState<SocialContentType>('gypsum_false_ceiling');
   const [platforms, setPlatforms] = useState<SocialPlatformTarget>('both');
   const [language, setLanguage] = useState<SocialLanguage>('en');
@@ -56,11 +65,14 @@ export default function ContentStudioClient() {
   const [campaign, setCampaign] = useState('');
   const [generated, setGenerated] = useState<Generated | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   async function generate() {
     setLoading(true);
     setError(null);
+    setSaved(false);
     try {
       const response = await api.post<{ generated: Generated }>('/api/social/generate', {
         contentType,
@@ -74,6 +86,32 @@ export default function ContentStudioClient() {
       setError(caught instanceof ApiError ? caught.message : 'Could not generate content.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveAsDraft() {
+    if (!generated) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await api.post<{ post: SocialPost }>('/api/social/posts', {
+        title: generated.title,
+        contentType,
+        platforms,
+        language,
+        content: topic.trim(),
+        facebookContent: generated.facebookContent,
+        instagramContent: generated.instagramContent,
+        campaign: campaign.trim() || undefined,
+      });
+      setSaved(true);
+      if (response.data?.post) {
+        router.push('/dashboard/content-calendar');
+      }
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : 'Could not save the draft.');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -203,11 +241,21 @@ export default function ContentStudioClient() {
           {generated ? (
             <>
               <Card>
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-ink-950">{generated.title}</h3>
-                  <Badge tone="ai">
-                    {generated.provider} · {generated.model}
-                  </Badge>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-ink-950">{generated.title}</h3>
+                    <Badge tone="ai" className="mt-1.5">
+                      {generated.provider} · {generated.model}
+                    </Badge>
+                  </div>
+                  <Button
+                    size="sm"
+                    loading={saving}
+                    icon={saved ? <CheckCircleIcon size={16} /> : undefined}
+                    onClick={() => void saveAsDraft()}
+                  >
+                    {saved ? 'Saved' : 'Save as draft'}
+                  </Button>
                 </div>
               </Card>
 

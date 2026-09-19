@@ -341,3 +341,10 @@ export const ImageIcon = (p: IconProps) => (
     <path d="m4 17 5-5 3.5 3.5L17 10l3.2 3.2" />
   </Icon>
 );
+
+export const CopyIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="9" y="9" width="12" height="12" rx="2.2" />
+    <path d="M6 15H4.8A1.8 1.8 0 0 1 3 13.2V4.8A1.8 1.8 0 0 1 4.8 3h8.4A1.8 1.8 0 0 1 15 4.8V6" />
+  </Icon>
+);

@@ -262,6 +262,8 @@ export type AuditAction =
   | 'social_post_approved'
   | 'social_post_scheduled'
   | 'social_post_unscheduled'
+  | 'social_post_duplicated'
+  | 'social_post_deleted'
   | 'social_post_published_manual'
   | 'social_post_published_auto'
   | 'social_post_failed'

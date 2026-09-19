@@ -94,6 +94,13 @@ export const SECONDARY_NAV: NavItem[] = [
     tone: 'ai',
   },
   {
+    href: '/dashboard/content-calendar',
+    label: 'Content Calendar',
+    short: 'Calendar',
+    icon: CalendarIcon,
+    tone: 'brand',
+  },
+  {
     href: '/dashboard/media',
     label: 'Media Manager',
     short: 'Media',
