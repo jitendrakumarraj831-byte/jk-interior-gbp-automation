@@ -186,6 +186,7 @@ export type AutomationRunName =
   | 'sync-reviews'
   | 'generate-drafts'
   | 'publish-posts'
+  | 'publish-replies'
   | 'sync-performance';
 
 export type AutomationRun = {

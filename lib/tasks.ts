@@ -13,7 +13,7 @@
 import { generateReplyDraft } from './ai-reply';
 import { recordAudit } from './audit';
 import { env, isAiConfigured, isMockModeActive } from './config';
-import { recordAccessFailure, shouldSkipGoogleCalls } from './gbp-access';
+import { recordAccessFailure, shouldSkipGoogleCalls, type GbpAccessStatus } from './gbp-access';
 import {
   isMockResourceName,
   mockReviewsResult,
@@ -44,17 +44,27 @@ import type { AutomationRun, AutomationRunName, ReplyDraft, Review } from './typ
 type TaskResult = Omit<AutomationRun, 'task' | 'startedAt' | 'finishedAt'>;
 
 /**
- * Result used when Business Profile API access is still pending.
+ * Result used when Business Profile API access is pending approval, or
+ * Google is temporarily rate limiting requests.
  *
- * Reported as ok:true deliberately — a skipped job is the system behaving
- * correctly while it waits for Google, not a failure. Marking it failed would
- * make the whole automation page look broken for weeks.
+ * Reported as ok:true deliberately for both — a skipped job is the system
+ * behaving correctly while it waits for Google, not a failure. Marking either
+ * as failed would turn "Automation / Cron" red for a condition System Health
+ * already reports correctly on its own line ("Approval pending" /
+ * "Rate limited"), and would make the whole automation page look broken for
+ * as long as the wait lasts.
  */
-function skippedForPendingAccess(): TaskResult {
+function skippedForAccessStatus(status: Extract<GbpAccessStatus, 'pending' | 'rate_limited'>): TaskResult {
   return {
     ok: true,
-    summary: 'Skipped — Google Business Profile API access is pending approval.',
-    details: { status: 'skipped', reason: 'gbp_access_pending' },
+    summary:
+      status === 'rate_limited'
+        ? 'Skipped — Google is rate limiting Business Profile API requests right now.'
+        : 'Skipped — Google Business Profile API access is pending approval.',
+    details: {
+      status: 'skipped',
+      reason: status === 'rate_limited' ? 'gbp_rate_limited' : 'gbp_access_pending',
+    },
   };
 }
 
@@ -72,11 +82,16 @@ async function shouldSkipGbpWork(): Promise<boolean> {
  * a genuine fault rather than the expected pending/rate-limited states —
  * raises a "Google API Issue" notification. Deduped to once per code per day
  * so a run failing every few minutes does not flood the notification list.
+ *
+ * Returns the classified status (or null when `error` wasn't a recognised
+ * AppError) so the caller can decide whether this was an expected wait
+ * (pending / rate limited — the run should be reported as skipped, not
+ * failed) or a genuine fault that should propagate and mark the run failed.
  */
-async function noteGoogleFailure(error: unknown): Promise<void> {
-  if (!(error instanceof AppError)) return;
+async function noteGoogleFailure(error: unknown): Promise<GbpAccessStatus | null> {
+  if (!(error instanceof AppError)) return null;
   const status = await recordAccessFailure(error.code);
-  if (status !== 'auth_error' && status !== 'permission_error' && status !== 'error') return;
+  if (status !== 'auth_error' && status !== 'permission_error' && status !== 'error') return status;
 
   const day = new Date().toISOString().slice(0, 10);
   await notify({
@@ -86,6 +101,16 @@ async function noteGoogleFailure(error: unknown): Promise<void> {
     href: '/dashboard/health',
     dedupeKey: `gbp-issue:${error.code}:${day}`,
   });
+  return status;
+}
+
+/**
+ * True, with the run already returned, when a caught error is an expected
+ * wait (pending approval or a temporary rate limit) rather than a genuine
+ * fault. Callers pass the status `noteGoogleFailure` already classified.
+ */
+function isExpectedWait(status: GbpAccessStatus | null): status is 'pending' | 'rate_limited' {
+  return status === 'pending' || status === 'rate_limited';
 }
 
 /** Runs a task, records the outcome + an audit entry, and never lets it throw past the caller. */
@@ -164,7 +189,7 @@ export function applyDraftStatus(reviews: Review[], drafts: ReplyDraft[]): Revie
 
 export async function syncReviews(): Promise<AutomationRun> {
   return runTask('sync-reviews', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
 
     const drafts = await listDrafts();
     const previousCache = await getCachedReviews();
@@ -193,7 +218,8 @@ export async function syncReviews(): Promise<AutomationRun> {
       target = await resolveTarget();
       result = await listReviews(target.locationPath);
     } catch (error) {
-      await noteGoogleFailure(error);
+      const status = await noteGoogleFailure(error);
+      if (isExpectedWait(status)) return skippedForAccessStatus(status);
       throw error;
     }
 
@@ -235,7 +261,7 @@ export async function generateDrafts(): Promise<AutomationRun> {
       return { ok: true, summary: 'Automatic draft generation is turned off in Settings.' };
     }
 
-    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
 
     let reviews;
     if (isMockModeActive()) {
@@ -245,7 +271,8 @@ export async function generateDrafts(): Promise<AutomationRun> {
         const target = await resolveTarget();
         ({ reviews } = await listReviews(target.locationPath, { maxPages: 2 }));
       } catch (error) {
-        await noteGoogleFailure(error);
+        const status = await noteGoogleFailure(error);
+        if (isExpectedWait(status)) return skippedForAccessStatus(status);
         throw error;
       }
     }
@@ -323,7 +350,13 @@ export async function createDraftForReview(review: Review): Promise<ReplyDraft> 
  * drafts wait for the admin to press Publish in the dashboard.
  */
 export async function publishApprovedReplies(): Promise<AutomationRun> {
-  return runTask('sync-reviews', async (): Promise<TaskResult> => {
+  // A distinct task name from syncReviews(): both used to record under
+  // 'sync-reviews', so whichever of the two ran last (this one always runs
+  // right after syncReviews() in /api/cron/sync) silently overwrote the run
+  // log's "most recent sync-reviews" slot — masking the real review sync
+  // outcome. System Health reads exactly that slot, so a genuine syncReviews
+  // failure could be hidden behind this task's unrelated (usually no-op) result.
+  return runTask('publish-replies', async (): Promise<TaskResult> => {
     const settings = await getSettings();
     const autoPublish = settings.autoPublishReplies || env().AUTO_PUBLISH_REPLIES;
     if (!autoPublish) {
@@ -398,7 +431,7 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
 
 export async function publishScheduledPosts(): Promise<AutomationRun> {
   return runTask('publish-posts', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
 
     const due = await listDuePosts();
     if (due.length === 0) {
@@ -412,7 +445,8 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
       try {
         target = await resolveTarget();
       } catch (error) {
-        await noteGoogleFailure(error);
+        const status = await noteGoogleFailure(error);
+        if (isExpectedWait(status)) return skippedForAccessStatus(status);
         throw error;
       }
     }
@@ -477,7 +511,7 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
 
 export async function syncPerformance(days = 30): Promise<AutomationRun> {
   return runTask('sync-performance', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForPendingAccess();
+    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
     if (isMockModeActive()) {
       return {
         ok: true,
@@ -491,7 +525,8 @@ export async function syncPerformance(days = 30): Promise<AutomationRun> {
       const target = await resolveTarget();
       snapshot = await fetchPerformance(target.locationName, { days });
     } catch (error) {
-      await noteGoogleFailure(error);
+      const status = await noteGoogleFailure(error);
+      if (isExpectedWait(status)) return skippedForAccessStatus(status);
       throw error;
     }
     await setCachedPerformance(snapshot);
