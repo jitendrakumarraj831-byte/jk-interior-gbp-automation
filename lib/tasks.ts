@@ -451,6 +451,7 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
       }
     }
     let published = 0;
+    let skipped = 0;
     let failed = 0;
 
     for (const post of due) {
@@ -482,6 +483,20 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
           source: 'cron',
         });
       } catch (error) {
+        // createLocalPost() is a second Google call site (resolveTarget()
+        // above frequently makes none at all, when the target is pinned or
+        // already selected) — pending/rate-limited responses here must be
+        // classified the same way, not counted as a publish failure.
+        const status = mock ? null : await noteGoogleFailure(error);
+        if (isExpectedWait(status)) {
+          // Leave it scheduled — cron picks it up again once Google answers.
+          // Stop this run's loop rather than hammering a known rate limit
+          // with every other due post.
+          await savePost({ ...post, status: 'scheduled', error: undefined });
+          skipped += 1;
+          break;
+        }
+
         failed += 1;
         // Stays 'failed', never 'published' — we do not claim a post went live.
         await savePost({
@@ -501,8 +516,11 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
 
     return {
       ok: failed === 0,
-      summary: `Published ${published} of ${due.length} due post(s); ${failed} failed.`,
-      details: { due: due.length, published, failed },
+      summary:
+        skipped > 0
+          ? `Published ${published} of ${due.length} due post(s); ${skipped} skipped (Google Business Profile API pending/rate limited), ${failed} failed.`
+          : `Published ${published} of ${due.length} due post(s); ${failed} failed.`,
+      details: { due: due.length, published, skipped, failed },
     };
   });
 }

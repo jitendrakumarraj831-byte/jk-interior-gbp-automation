@@ -3,22 +3,45 @@
  * System Health while the Business Profile API is merely rate limited or
  * pending approval — an expected wait, not a fault.
  *
- * Root cause: `shouldSkipGoogleCalls()` only pre-emptively skips calls while
- * access is 'pending'; a 'rate_limited' response was never pre-empted, so the
- * task actually attempted the Google call, got a classified GBP_RATE_LIMITED
- * error back, and unconditionally re-threw it. `runTask()` then marked the
- * run `ok:false`, and `system-health.ts`'s `cronCheck()` read that as a real
- * failure. Separately, `publishApprovedReplies()` recorded itself under the
- * SAME task name as `syncReviews()` ('sync-reviews'), so whichever of the two
- * ran later in /api/cron/sync silently overwrote the other's slot in the run
- * log — meaning the 'sync-reviews' health signal was not reliably the actual
- * review-sync outcome.
+ * Round 1 root cause: `shouldSkipGoogleCalls()` only pre-emptively skips calls
+ * while access is 'pending'; a 'rate_limited' response was never pre-empted,
+ * so the task actually attempted the Google call, got a classified
+ * GBP_RATE_LIMITED error back, and unconditionally re-threw it. `runTask()`
+ * then marked the run `ok:false`, and `system-health.ts`'s `cronCheck()` read
+ * that as a real failure. Separately, `publishApprovedReplies()` recorded
+ * itself under the SAME task name as `syncReviews()` ('sync-reviews'), so
+ * whichever of the two ran later in /api/cron/sync silently overwrote the
+ * other's slot in the run log.
  *
- * The fix (lib/tasks.ts): a Google call that fails with a classified 'pending'
- * or 'rate_limited' status now returns a skipped (`ok:true`) result instead of
- * re-throwing; only a genuine fault (auth/permission/unclassified error)
- * still propagates and marks the run failed. `publishApprovedReplies()` now
- * records under its own task name, 'publish-replies'.
+ * Round 1 fix (lib/tasks.ts): a Google call that fails with a classified
+ * 'pending' or 'rate_limited' status now returns a skipped (`ok:true`) result
+ * instead of re-throwing; only a genuine fault still propagates and marks the
+ * run failed. `publishApprovedReplies()` now records under its own task name,
+ * 'publish-replies'.
+ *
+ * Round 2 root cause: `publishScheduledPosts()` has a SECOND Google call site
+ * — `createLocalPost()`, once per due post — that round 1 never wrapped. Only
+ * the earlier `resolveTarget()` call was covered, and `resolveTarget()`
+ * frequently makes no Google call at all (it returns immediately when the
+ * account/location is pinned via env vars or already selected in settings —
+ * see lib/connection.ts). So a rate limit hit while actually publishing a due
+ * post still fell into the generic per-post catch, which only ever produces
+ * `failed += 1` / `ok: failed === 0` — genuinely misclassified as a failure,
+ * exactly matching the reported "publish-posts failed: Google is rate
+ * limiting requests right now." System Health then read that `ok:false` as a
+ * real failure, same as before.
+ *
+ * Round 2 fix (lib/tasks.ts): the per-post catch in `publishScheduledPosts()`
+ * now classifies its error the same way as every other Google call site —
+ * pending/rate-limited leaves the post `scheduled` (not `failed`) and stops
+ * the loop rather than hammering every other due post with a call that will
+ * just be rate limited again. Belt-and-suspenders (lib/system-health.ts):
+ * `cronCheck()` no longer trusts a persisted run's `ok` flag alone — it
+ * re-derives genuineness from the run's own classified `details.code`, so a
+ * STALE `ok:false` record left over from before either fix (still the most
+ * recent entry for its task, since these jobs run at most a couple of times a
+ * day) is also correctly read as non-error immediately, rather than waiting
+ * for the next cron firing to overwrite it.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -161,6 +184,59 @@ describe('2. GBP rate limit', () => {
     expect(performance.ok).toBe(true);
     expect(performance.details).toMatchObject({ status: 'skipped', reason: 'gbp_rate_limited' });
   });
+
+  it('publish-posts: a rate limit during the actual publish call (createLocalPost) is skipped, not failed', async () => {
+    // This is the round-2 gap: resolveTarget() resolves fine (e.g. a pinned
+    // target, no Google call needed) but the real Google call for a due post
+    // — createLocalPost() — is rate limited.
+    const { tasks, repository, appError } = await loadTasks();
+    await repository.savePost({
+      id: 'post-2',
+      type: 'general',
+      title: 'Due post',
+      description: 'A post whose scheduled time has passed.',
+      cta: { type: 'NONE' },
+      scheduledFor: '2020-01-01T00:00:00.000Z',
+      status: 'scheduled',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    });
+    createLocalPost.mockRejectedValue(appError('GBP_RATE_LIMITED', 'rate limited'));
+
+    const run = await tasks.publishScheduledPosts();
+
+    expect(run.ok).toBe(true);
+    expect(run.details).toMatchObject({ published: 0, failed: 0, skipped: 1 });
+
+    // The post is left scheduled — not marked failed — so cron retries it
+    // once Google answers again.
+    const post = await repository.getPost('post-2');
+    expect(post?.status).toBe('scheduled');
+  });
+
+  it('publish-posts: once rate limited, it stops rather than retrying every other due post', async () => {
+    const { tasks, repository, appError } = await loadTasks();
+    for (const id of ['post-a', 'post-b', 'post-c']) {
+      await repository.savePost({
+        id,
+        type: 'general',
+        title: `Due post ${id}`,
+        description: 'A post whose scheduled time has passed.',
+        cta: { type: 'NONE' },
+        scheduledFor: '2020-01-01T00:00:00.000Z',
+        status: 'scheduled',
+        createdAt: '2020-01-01T00:00:00.000Z',
+        updatedAt: '2020-01-01T00:00:00.000Z',
+      });
+    }
+    createLocalPost.mockRejectedValue(appError('GBP_RATE_LIMITED', 'rate limited'));
+
+    const run = await tasks.publishScheduledPosts();
+
+    expect(run.ok).toBe(true);
+    // Only the first due post was attempted — the loop stopped there.
+    expect(createLocalPost).toHaveBeenCalledTimes(1);
+  });
 });
 
 /* ----------------------- 3. skipped never turns Cron red -------------------- */
@@ -214,6 +290,31 @@ describe('4. a genuine internal failure still turns Cron health error', () => {
     const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
     expect(cron?.status).toBe('error');
   });
+
+  it('each failed task shows its own reason, not one task’s reason borrowed for all', async () => {
+    const { repository, systemHealth } = await loadTasks();
+
+    await repository.recordRun({
+      task: 'generate-drafts',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      ok: false,
+      summary: 'GROQ_API_KEY is not set, so no reply drafts can be generated.',
+      details: { code: 'AI_NOT_CONFIGURED' },
+    });
+    await repository.recordRun({
+      task: 'sync-performance',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      ok: false,
+      summary: 'Google rejected the stored credentials.',
+      details: { code: 'GOOGLE_AUTH_FAILED' },
+    });
+
+    const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
+    expect(cron?.detail).toContain('GROQ_API_KEY is not set');
+    expect(cron?.detail).toContain('Google rejected the stored credentials');
+  });
 });
 
 /* ---------------------------- 5. success → healthy -------------------------- */
@@ -254,6 +355,50 @@ describe('6. an old historical failure does not mask the current healthy state',
 
     const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
     expect(cron?.status).toBe('healthy');
+  });
+
+  it('a stale ok:false run coded as GBP_RATE_LIMITED/GBP_QUOTA_EXCEEDED does not mark Cron health red', async () => {
+    // Simulates a run persisted by a build predating either fix — recorded
+    // ok:false, but its own classified error code says it was only ever an
+    // expected wait. cronCheck() must not trust `ok` alone for this.
+    const { repository, systemHealth } = await loadTasks();
+
+    await repository.recordRun({
+      task: 'generate-drafts',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      ok: false,
+      summary: 'Google is rate limiting requests right now. This is temporary.',
+      details: { code: 'GBP_RATE_LIMITED' },
+    });
+    await repository.recordRun({
+      task: 'sync-performance',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      ok: false,
+      summary: 'Google Business Profile API quota exhausted.',
+      details: { code: 'GBP_QUOTA_EXCEEDED' },
+    });
+
+    const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
+    expect(cron?.status).not.toBe('error');
+    expect(cron?.status).toBe('healthy');
+  });
+
+  it('a stale ok:false run coded as a genuine fault still marks Cron health red', async () => {
+    const { repository, systemHealth } = await loadTasks();
+
+    await repository.recordRun({
+      task: 'publish-posts',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      ok: false,
+      summary: 'Google rejected the stored credentials.',
+      details: { code: 'GOOGLE_AUTH_FAILED' },
+    });
+
+    const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
+    expect(cron?.status).toBe('error');
   });
 
   it('publishApprovedReplies no longer overwrites syncReviews’ run-log slot', async () => {
