@@ -59,6 +59,28 @@ export const AI_TIMEOUT_MS = 20_000;
 /** The only OAuth scope the Google Business Profile APIs accept. */
 export const GBP_SCOPE = 'https://www.googleapis.com/auth/business.manage';
 
+/**
+ * Current stable Graph API version as of this integration (v26.0, released
+ * 2026-07-29). Meta ships a new version roughly every quarter — override via
+ * META_API_VERSION without a code change if a newer one needs pinning.
+ */
+export const DEFAULT_META_API_VERSION = 'v26.0';
+
+/**
+ * Least-privilege permission set for Facebook Page + Instagram Professional
+ * publishing, per Meta's current (non-deprecated) permission names.
+ * `instagram_business_basic` / `instagram_business_content_publish` replaced
+ * the older `instagram_basic` / `instagram_content_publish`, deprecated
+ * 2025-01-27 — never request the old names.
+ */
+export const META_OAUTH_SCOPES = [
+  'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_posts',
+  'instagram_business_basic',
+  'instagram_business_content_publish',
+] as const;
+
 const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().trim().default(''),
   GOOGLE_CLIENT_SECRET: z.string().trim().default(''),
@@ -102,6 +124,38 @@ const envSchema = z.object({
   VERCEL_ENV: z.string().trim().default(''),
   VERCEL_URL: z.string().trim().default(''),
   NODE_ENV: z.string().trim().default('development'),
+
+  // --- Meta (Facebook Page + Instagram Professional) social automation ---
+  META_APP_ID: z.string().trim().default(''),
+  META_APP_SECRET: z.string().trim().default(''),
+  META_REDIRECT_URI: z.string().trim().default(''),
+  /** Pinned Graph API version. Overridable without a code change. */
+  META_API_VERSION: z.string().trim().default(DEFAULT_META_API_VERSION),
+  /** Base64-encoded 32-byte key for AES-256-GCM encryption of Meta tokens at rest. */
+  META_ENCRYPTION_KEY: z.string().trim().default(''),
+
+  /** Master kill-switches. Every one defaults OFF — enabling is a deliberate act. */
+  META_SOCIAL_ENABLED: z
+    .string()
+    .trim()
+    .default('false')
+    .transform((v) => v.toLowerCase() === 'true'),
+  META_FACEBOOK_ENABLED: z
+    .string()
+    .trim()
+    .default('false')
+    .transform((v) => v.toLowerCase() === 'true'),
+  META_INSTAGRAM_ENABLED: z
+    .string()
+    .trim()
+    .default('false')
+    .transform((v) => v.toLowerCase() === 'true'),
+
+  /**
+   * Vercel Blob's read/write token. Auto-injected by Vercel once a Blob store
+   * is attached to the project — never asked of the operator by name here.
+   */
+  BLOB_READ_WRITE_TOKEN: z.string().trim().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -227,6 +281,56 @@ export function isDurableStoreConfigured(): boolean {
   return Boolean(e.UPSTASH_REDIS_REST_URL && e.UPSTASH_REDIS_REST_TOKEN);
 }
 
+/* --------------------------- Meta social automation ------------------------ */
+
+/** True when the Meta app's OAuth client is configured (login flow can start). */
+export function isMetaOAuthConfigured(): boolean {
+  const e = env();
+  return Boolean(e.META_APP_ID && e.META_APP_SECRET && e.META_REDIRECT_URI);
+}
+
+/** True when a 32-byte base64 key is present — required before any token is encrypted. */
+export function isMetaEncryptionConfigured(): boolean {
+  const key = env().META_ENCRYPTION_KEY;
+  if (!key) return false;
+  try {
+    return Buffer.from(key, 'base64').length === 32;
+  } catch {
+    return false;
+  }
+}
+
+export function metaGraphVersion(): string {
+  return env().META_API_VERSION || DEFAULT_META_API_VERSION;
+}
+
+/**
+ * Whether the Meta integration is usable at all. All four must be true:
+ * the master flag, OAuth client config, and the encryption key — a Meta
+ * token must never be persisted unencrypted.
+ */
+export function isMetaConfigured(): boolean {
+  const e = env();
+  return e.META_SOCIAL_ENABLED && isMetaOAuthConfigured() && isMetaEncryptionConfigured();
+}
+
+export function isFacebookEnabled(): boolean {
+  return isMetaConfigured() && env().META_FACEBOOK_ENABLED;
+}
+
+export function isInstagramEnabled(): boolean {
+  return isMetaConfigured() && env().META_INSTAGRAM_ENABLED;
+}
+
+/**
+ * True when media uploaded through the Media Manager can be stored somewhere
+ * Meta can fetch it back from. Instagram publishing requires a public HTTPS
+ * URL at publish time — a local/blob-URL is never enough.
+ */
+export function isMediaStorageConfigured(): boolean {
+  return Boolean(env().BLOB_READ_WRITE_TOKEN);
+}
+
 /**
  * Whether the safe mock Business Profile is active.
  *
@@ -296,6 +400,15 @@ export type ConfigSummary = {
   mockModeBlocked: boolean;
   pinnedLocation: boolean;
   environment: string;
+  meta: {
+    socialEnabled: boolean;
+    oauthConfigured: boolean;
+    encryptionConfigured: boolean;
+    facebookEnabled: boolean;
+    instagramEnabled: boolean;
+    apiVersion: string;
+    mediaStorageConfigured: boolean;
+  };
 };
 
 export function configSummary(refreshTokenFromStore?: string | null): ConfigSummary {
@@ -321,6 +434,15 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
     mockModeBlocked: isMockModeBlocked(),
     pinnedLocation: Boolean(e.GBP_LOCATION_NAME),
     environment: e.VERCEL_ENV || e.NODE_ENV,
+    meta: {
+      socialEnabled: e.META_SOCIAL_ENABLED,
+      oauthConfigured: isMetaOAuthConfigured(),
+      encryptionConfigured: isMetaEncryptionConfigured(),
+      facebookEnabled: isFacebookEnabled(),
+      instagramEnabled: isInstagramEnabled(),
+      apiVersion: metaGraphVersion(),
+      mediaStorageConfigured: isMediaStorageConfigured(),
+    },
   };
 }
 
@@ -374,6 +496,21 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
   }
   if (e.AUTO_PUBLISH_REPLIES) {
     warnings.push('AUTO_PUBLISH_REPLIES is ON — approved replies can be published without review.');
+  }
+  if (e.META_SOCIAL_ENABLED && !isMetaOAuthConfigured()) {
+    warnings.push(
+      'META_SOCIAL_ENABLED is ON but Meta OAuth is not configured. Set META_APP_ID, META_APP_SECRET and META_REDIRECT_URI.',
+    );
+  }
+  if (e.META_SOCIAL_ENABLED && !isMetaEncryptionConfigured()) {
+    warnings.push(
+      'META_SOCIAL_ENABLED is ON but META_ENCRYPTION_KEY is missing or not a 32-byte base64 key. Meta tokens cannot be stored until it is set.',
+    );
+  }
+  if (e.META_SOCIAL_ENABLED && !isMediaStorageConfigured()) {
+    warnings.push(
+      'META_SOCIAL_ENABLED is ON but no media storage is configured (BLOB_READ_WRITE_TOKEN). Attach a Vercel Blob store before uploading media — Instagram publishing needs a public URL for every image/video.',
+    );
   }
   return warnings;
 }

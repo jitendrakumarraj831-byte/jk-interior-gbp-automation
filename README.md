@@ -673,6 +673,17 @@ the wrong one.
 
 ---
 
+## Meta Social Automation (Facebook + Instagram)
+
+A separate, independent module extending this dashboard with Facebook Page
+and Instagram Professional publishing — AI content drafting, an approval
+calendar, and scheduled/manual publishing. Every Auto Publish setting
+defaults off, and it never affects the Google Business Profile automation
+above (or vice versa). Full setup, API flow, permissions, environment
+variables and troubleshooting: [`docs/META_SOCIAL_AUTOMATION.md`](docs/META_SOCIAL_AUTOMATION.md).
+
+---
+
 ## Licence
 
 Private and proprietary to JK Interior.

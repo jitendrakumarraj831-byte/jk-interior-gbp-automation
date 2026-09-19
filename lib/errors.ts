@@ -20,7 +20,20 @@ export type AppErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'STORE_ERROR'
-  | 'INTERNAL';
+  | 'INTERNAL'
+  // --- Meta (Facebook/Instagram) social automation ---
+  | 'META_NOT_CONFIGURED'
+  | 'META_ENCRYPTION_NOT_CONFIGURED'
+  | 'META_NOT_CONNECTED'
+  | 'META_AUTH_FAILED'
+  | 'META_TOKEN_DECRYPT_FAILED'
+  | 'META_TOKEN_EXPIRED'
+  | 'META_PERMISSION_ERROR'
+  | 'META_RATE_LIMITED'
+  | 'META_API_ERROR'
+  | 'META_DUPLICATE_CONTENT'
+  | 'META_MEDIA_INVALID'
+  | 'MEDIA_STORAGE_NOT_CONFIGURED';
 
 export class AppError extends Error {
   readonly code: AppErrorCode;
