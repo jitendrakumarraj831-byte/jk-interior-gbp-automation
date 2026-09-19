@@ -2,6 +2,7 @@
 
 import { z } from 'zod';
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { AppError } from '@/lib/errors';
 import { deletePost, getPost, savePost } from '@/lib/repository';
 import { assertAdmin, handleRoute, httpUrlSchema, ok, parseJson, sanitizeText } from '@/lib/security';
@@ -63,6 +64,13 @@ export async function PATCH(request: Request, context: Context) {
       status: body.status ?? post.status,
       error: undefined,
     });
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'post_updated',
+      resource: saved.id,
+      status: 'success',
+      source: 'dashboard',
+    });
 
     return ok({ post: saved }, 'Post updated.');
   });
@@ -77,6 +85,13 @@ export async function DELETE(request: Request, context: Context) {
     if (!post) throw new AppError('NOT_FOUND', 'Post not found.', 404);
 
     await deletePost(id);
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'post_deleted',
+      resource: id,
+      status: 'success',
+      source: 'dashboard',
+    });
     return ok(
       { deleted: id, wasPublished: post.status === 'published' },
       post.status === 'published'

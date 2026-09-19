@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { isMockModeActive } from '@/lib/config';
 import { AppError } from '@/lib/errors';
 import { isMockResourceName, simulatePublish } from '@/lib/gbp-mock';
@@ -67,6 +68,13 @@ export async function POST(request: Request) {
     } catch (error) {
       const message = error instanceof AppError ? error.message : 'Publishing failed.';
       await saveDraft({ ...draft, status: 'publish_failed', error: message });
+      await recordAudit({
+        actor: actorFromRequest(request),
+        action: 'review_reply_published',
+        resource: draft.id,
+        status: 'failure',
+        source: 'dashboard',
+      });
       throw error;
     }
 
@@ -75,6 +83,14 @@ export async function POST(request: Request) {
       status: 'published',
       publishedAt: new Date().toISOString(),
       error: undefined,
+    });
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'review_reply_published',
+      resource: draft.id,
+      status: 'success',
+      source: 'dashboard',
+      detail: simulated ? 'mock' : undefined,
     });
 
     return ok(

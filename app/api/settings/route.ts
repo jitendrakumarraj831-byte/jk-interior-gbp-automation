@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 
+import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { configSummary, configWarnings, SERVICES, BUSINESS } from '@/lib/config';
 import { describeAccess, readAccess } from '@/lib/gbp-access';
 import { getRefreshToken } from '@/lib/google-auth';
@@ -50,6 +51,14 @@ export async function PATCH(request: Request) {
     assertAdmin(request);
     const patch = await parseJson(request, patchSchema);
     const settings = await saveSettings(patch);
+    await recordAudit({
+      actor: actorFromRequest(request),
+      action: 'settings_updated',
+      resource: 'app-settings',
+      status: 'success',
+      source: 'dashboard',
+      detail: Object.keys(patch).join(', '),
+    });
     return ok(
       { settings },
       patch.autoPublishReplies === true
