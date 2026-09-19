@@ -21,6 +21,7 @@ import {
   FacebookIcon,
   InstagramIcon,
   RefreshIcon,
+  SendIcon,
   SocialIcon,
   TrashIcon,
 } from '@/components/icons';
@@ -295,6 +296,17 @@ export default function ContentCalendarClient() {
                       onClick={() => void act(post.id, () => api.post(`/api/social/posts/${post.id}/unschedule`))}
                     >
                       Unschedule
+                    </Button>
+                  ) : null}
+
+                  {post.status === 'approved' || post.status === 'scheduled' ? (
+                    <Button
+                      size="sm"
+                      loading={busy}
+                      icon={<SendIcon size={14} />}
+                      onClick={() => void act(post.id, () => api.post(`/api/social/posts/${post.id}/publish`))}
+                    >
+                      Publish now
                     </Button>
                   ) : null}
 

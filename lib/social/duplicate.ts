@@ -47,3 +47,18 @@ export async function findDuplicate(hash: string, excludePostId?: string): Promi
     ) ?? null
   );
 }
+
+/**
+ * The final publish-time gate — only checks against posts already LIVE.
+ * A same-hash *scheduled* post is a double-schedule, already prevented at
+ * schedule time (see app/api/social/posts/[id]/schedule); re-flagging it
+ * here would just make the cron skip both of two intentionally-identical
+ * approved posts.
+ */
+export async function findPublishedDuplicate(hash: string, excludePostId?: string): Promise<SocialPost | null> {
+  const recent = await listRecentSocialPosts(30);
+  return (
+    recent.find((post) => post.contentHash === hash && post.id !== excludePostId && post.status === 'published') ??
+    null
+  );
+}

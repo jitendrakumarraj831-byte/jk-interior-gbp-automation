@@ -187,7 +187,9 @@ export type AutomationRunName =
   | 'generate-drafts'
   | 'publish-posts'
   | 'publish-replies'
-  | 'sync-performance';
+  | 'sync-performance'
+  | 'publish-social'
+  | 'generate-social-content';
 
 export type AutomationRun = {
   task: AutomationRunName;
