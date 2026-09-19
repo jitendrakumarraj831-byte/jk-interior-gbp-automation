@@ -150,6 +150,12 @@ const envSchema = z.object({
     .trim()
     .default('false')
     .transform((v) => v.toLowerCase() === 'true'),
+
+  /**
+   * Vercel Blob's read/write token. Auto-injected by Vercel once a Blob store
+   * is attached to the project — never asked of the operator by name here.
+   */
+  BLOB_READ_WRITE_TOKEN: z.string().trim().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -317,6 +323,15 @@ export function isInstagramEnabled(): boolean {
 }
 
 /**
+ * True when media uploaded through the Media Manager can be stored somewhere
+ * Meta can fetch it back from. Instagram publishing requires a public HTTPS
+ * URL at publish time — a local/blob-URL is never enough.
+ */
+export function isMediaStorageConfigured(): boolean {
+  return Boolean(env().BLOB_READ_WRITE_TOKEN);
+}
+
+/**
  * Whether the safe mock Business Profile is active.
  *
  * Deliberately impossible to switch on for the production deployment: the flag
@@ -392,6 +407,7 @@ export type ConfigSummary = {
     facebookEnabled: boolean;
     instagramEnabled: boolean;
     apiVersion: string;
+    mediaStorageConfigured: boolean;
   };
 };
 
@@ -425,6 +441,7 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
       facebookEnabled: isFacebookEnabled(),
       instagramEnabled: isInstagramEnabled(),
       apiVersion: metaGraphVersion(),
+      mediaStorageConfigured: isMediaStorageConfigured(),
     },
   };
 }
@@ -488,6 +505,11 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
   if (e.META_SOCIAL_ENABLED && !isMetaEncryptionConfigured()) {
     warnings.push(
       'META_SOCIAL_ENABLED is ON but META_ENCRYPTION_KEY is missing or not a 32-byte base64 key. Meta tokens cannot be stored until it is set.',
+    );
+  }
+  if (e.META_SOCIAL_ENABLED && !isMediaStorageConfigured()) {
+    warnings.push(
+      'META_SOCIAL_ENABLED is ON but no media storage is configured (BLOB_READ_WRITE_TOKEN). Attach a Vercel Blob store before uploading media — Instagram publishing needs a public URL for every image/video.',
     );
   }
   return warnings;

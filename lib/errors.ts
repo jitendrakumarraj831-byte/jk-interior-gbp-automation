@@ -32,7 +32,8 @@ export type AppErrorCode =
   | 'META_RATE_LIMITED'
   | 'META_API_ERROR'
   | 'META_DUPLICATE_CONTENT'
-  | 'META_MEDIA_INVALID';
+  | 'META_MEDIA_INVALID'
+  | 'MEDIA_STORAGE_NOT_CONFIGURED';
 
 export class AppError extends Error {
   readonly code: AppErrorCode;

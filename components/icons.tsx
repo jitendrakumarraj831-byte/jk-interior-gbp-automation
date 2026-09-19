@@ -333,3 +333,11 @@ export const InstagramIcon = (p: IconProps) => (
     <circle cx="16.9" cy="7.1" r="0.9" fill="currentColor" stroke="none" />
   </Icon>
 );
+
+export const ImageIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <circle cx="8.5" cy="9.5" r="1.6" />
+    <path d="m4 17 5-5 3.5 3.5L17 10l3.2 3.2" />
+  </Icon>
+);

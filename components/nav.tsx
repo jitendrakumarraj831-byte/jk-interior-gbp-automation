@@ -27,6 +27,7 @@ import {
   GoogleIcon,
   HelpIcon,
   HomeIcon,
+  ImageIcon,
   InboxIcon,
   LogoutIcon,
   MenuIcon,
@@ -84,6 +85,20 @@ export const SECONDARY_NAV: NavItem[] = [
     short: 'Social',
     icon: SocialIcon,
     tone: 'info',
+  },
+  {
+    href: '/dashboard/content-studio',
+    label: 'Content Studio',
+    short: 'Studio',
+    icon: SparkIcon,
+    tone: 'ai',
+  },
+  {
+    href: '/dashboard/media',
+    label: 'Media Manager',
+    short: 'Media',
+    icon: ImageIcon,
+    tone: 'cyan',
   },
   {
     href: '/dashboard/automation',

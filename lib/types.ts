@@ -255,6 +255,8 @@ export type AuditAction =
   // --- Meta Social Automation ---
   | 'meta_connected'
   | 'meta_disconnected'
+  | 'media_uploaded'
+  | 'media_deleted'
   | 'social_draft_created'
   | 'social_content_edited'
   | 'social_post_approved'
