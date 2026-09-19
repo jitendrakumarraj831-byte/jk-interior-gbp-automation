@@ -18,10 +18,11 @@ import {
   isDurableStoreConfigured,
   isOAuthConfigured,
 } from './config';
-import { describeAccess, readAccess } from './gbp-access';
+import { describeAccess, readAccess, statusFromErrorCode } from './gbp-access';
 import { getRefreshToken } from './google-auth';
 import { lastRunOf } from './repository';
-import type { AutomationRunName, HealthCheck, HealthStatus, SystemHealthReport } from './types';
+import type { AppErrorCode } from './errors';
+import type { AutomationRun, AutomationRunName, HealthCheck, HealthStatus, SystemHealthReport } from './types';
 
 const PROVIDER_LABEL: Record<string, string> = { groq: 'Groq', gemini: 'Gemini', openai: 'OpenAI' };
 
@@ -118,6 +119,30 @@ function storageCheck(): HealthCheck {
       );
 }
 
+/**
+ * True only for a genuine fault — never for Google's expected pending/
+ * rate-limited response.
+ *
+ * `run.ok` should already be enough (lib/tasks.ts now reports pending/
+ * rate-limited responses as `ok:true`), but this re-derives the answer from
+ * the run's own classified error code as a second, independent check. That
+ * matters for a run recorded by an older build (before that classification
+ * existed) that is still the most recent entry for its task: without this,
+ * such a stale `ok:false` record would keep reporting "Automation / Cron =
+ * error" for a condition that was never a real failure, until the next
+ * cron firing happens to overwrite it — which, on a job that runs once or
+ * twice a day, can be many hours away. Re-deriving from `details.code`
+ * fixes the *calculation* so it is correct immediately, rather than waiting
+ * for stale data to age out.
+ */
+function isGenuineFailure(run: AutomationRun): boolean {
+  if (run.ok) return false;
+  const code = run.details?.code;
+  if (typeof code !== 'string') return true;
+  const status = statusFromErrorCode(code as AppErrorCode);
+  return status !== 'pending' && status !== 'rate_limited';
+}
+
 async function cronCheck(): Promise<HealthCheck> {
   if (!isCronConfigured()) {
     return check('cron', 'Automation / Cron', 'not_configured', 'CRON_SECRET is not set.');
@@ -136,12 +161,9 @@ async function cronCheck(): Promise<HealthCheck> {
   }
   const dayMs = 24 * 60 * 60 * 1000;
   const stale = recent.every((r) => Date.now() - new Date(r.startedAt).getTime() > 2 * dayMs);
-  // A genuine failure only — a skipped run (GBP access pending / rate limited,
-  // recorded by lib/tasks.ts with ok:true) is the system waiting correctly,
-  // never a reason to mark this red. lastRunOf() already returns each task's
-  // most recent run, so an old failure followed by a newer healthy run never
-  // counts here.
-  const failed = recent.filter((r) => !r.ok);
+  // lastRunOf() already returns each task's most recent run, so an old
+  // failure followed by a newer healthy/skipped run never counts here.
+  const failed = recent.filter((r) => isGenuineFailure(r));
   if (stale) {
     return check('cron', 'Automation / Cron', 'error', 'No job has run in over 48 hours.');
   }
@@ -150,7 +172,7 @@ async function cronCheck(): Promise<HealthCheck> {
     'Automation / Cron',
     failed.length > 0 ? 'error' : 'healthy',
     failed.length > 0
-      ? `${failed.map((r) => r.task).join(', ')} failed: ${failed[0]!.summary}`
+      ? failed.map((r) => `${r.task}: ${r.summary}`).join(' | ')
       : 'Jobs are running on schedule.',
   );
 }
