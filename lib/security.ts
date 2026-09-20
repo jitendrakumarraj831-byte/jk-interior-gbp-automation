@@ -23,6 +23,8 @@ import type { ApiEnvelope } from './types';
 
 export const ADMIN_COOKIE = 'jk_admin_session';
 export const OAUTH_STATE_COOKIE = 'jk_oauth_state';
+/** Separate from OAUTH_STATE_COOKIE so a Google and a Meta connect flow never collide. */
+export const META_OAUTH_STATE_COOKIE = 'jk_meta_oauth_state';
 /**
  * Double-submit CSRF token. Deliberately NOT httpOnly — the browser must be
  * able to echo it back in a header, which is the whole point of the pattern.

@@ -187,7 +187,9 @@ export type AutomationRunName =
   | 'generate-drafts'
   | 'publish-posts'
   | 'publish-replies'
-  | 'sync-performance';
+  | 'sync-performance'
+  | 'publish-social'
+  | 'generate-social-content';
 
 export type AutomationRun = {
   task: AutomationRunName;
@@ -207,7 +209,19 @@ export type NotificationCategory =
   | 'post_published'
   | 'google_api_issue'
   | 'performance_report_ready'
-  | 'profile_update';
+  | 'profile_update'
+  // --- Meta Social Automation ---
+  | 'meta_connected'
+  | 'meta_disconnected'
+  | 'social_draft_created'
+  | 'social_post_approved'
+  | 'social_post_scheduled'
+  | 'social_post_published'
+  | 'social_post_failed'
+  | 'social_post_skipped'
+  | 'meta_rate_limited'
+  | 'meta_token_expired'
+  | 'meta_permission_error';
 
 export type AppNotification = {
   id: string;
@@ -239,7 +253,24 @@ export type AuditAction =
   | 'automation_executed'
   | 'settings_updated'
   | 'google_connected'
-  | 'google_disconnected';
+  | 'google_disconnected'
+  // --- Meta Social Automation ---
+  | 'meta_connected'
+  | 'meta_disconnected'
+  | 'media_uploaded'
+  | 'media_deleted'
+  | 'social_draft_created'
+  | 'social_content_edited'
+  | 'social_post_approved'
+  | 'social_post_scheduled'
+  | 'social_post_unscheduled'
+  | 'social_post_duplicated'
+  | 'social_post_deleted'
+  | 'social_post_published_manual'
+  | 'social_post_published_auto'
+  | 'social_post_failed'
+  | 'social_post_skipped'
+  | 'social_settings_updated';
 
 export type AuditStatus = 'success' | 'failure';
 

@@ -74,10 +74,33 @@ async function request<T>(url: string, init?: RequestInit): Promise<ApiEnvelope<
   return body;
 }
 
+/** Multipart upload — omits Content-Type so the browser sets its own boundary. */
+async function uploadForm<T>(url: string, form: FormData): Promise<ApiEnvelope<T>> {
+  const response = await fetch(url, {
+    method: 'POST',
+    body: form,
+    headers: { 'x-csrf-token': csrfToken() },
+    credentials: 'same-origin',
+    cache: 'no-store',
+  });
+
+  let body: ApiEnvelope<T>;
+  try {
+    body = (await response.json()) as ApiEnvelope<T>;
+  } catch {
+    throw new ApiError(`Unexpected response from the server (HTTP ${response.status}).`, 'error');
+  }
+  if (!response.ok || body.status !== 'ok') {
+    throw new ApiError(body.message || 'Upload failed.', body.status ?? 'error', body.code);
+  }
+  return body;
+}
+
 export const api = {
   get: <T>(url: string) => request<T>(url),
   post: <T>(url: string, data?: unknown) =>
     request<T>(url, { method: 'POST', body: JSON.stringify(data ?? {}) }),
+  postForm: <T>(url: string, form: FormData) => uploadForm<T>(url, form),
   patch: <T>(url: string, data: unknown) =>
     request<T>(url, { method: 'PATCH', body: JSON.stringify(data) }),
   del: <T>(url: string) => request<T>(url, { method: 'DELETE' }),

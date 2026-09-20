@@ -16,10 +16,12 @@ import {
   isAiConfigured,
   isCronConfigured,
   isDurableStoreConfigured,
+  isMetaConfigured,
   isOAuthConfigured,
 } from './config';
 import { describeAccess, readAccess, statusFromErrorCode } from './gbp-access';
 import { getRefreshToken } from './google-auth';
+import { getConnectionState } from './meta/auth';
 import { lastRunOf } from './repository';
 import type { AppErrorCode } from './errors';
 import type { AutomationRun, AutomationRunName, HealthCheck, HealthStatus, SystemHealthReport } from './types';
@@ -177,6 +179,74 @@ async function cronCheck(): Promise<HealthCheck> {
   );
 }
 
+/**
+ * Meta's own equivalent of `isGenuineFailure` above — a connection/rate-limit
+ * condition Meta is expected to recover from on its own is never "error"
+ * here, same principle as the GBP check, kept as a separate function so this
+ * file's Google logic (isGenuineFailure, cronCheck) stays untouched.
+ */
+function isGenuineSocialFailure(run: AutomationRun): boolean {
+  if (run.ok) return false;
+  const code = run.details?.code;
+  if (typeof code !== 'string') return true;
+  return !['META_RATE_LIMITED', 'META_TOKEN_EXPIRED', 'META_NOT_CONNECTED', 'META_NOT_CONFIGURED'].includes(
+    code,
+  );
+}
+
+/**
+ * Deliberately separate from Google's `oauthCheck`/`gbpApiCheck` — Meta must
+ * stay independent from Google, so a GBP fault never touches this line and
+ * a Meta fault never touches GBP's.
+ */
+async function metaConnectionCheck(): Promise<HealthCheck> {
+  if (!isMetaConfigured()) {
+    return check(
+      'meta_connection',
+      'Meta Connection',
+      'not_configured',
+      'META_SOCIAL_ENABLED is off, or META_APP_ID/META_APP_SECRET/META_REDIRECT_URI/META_ENCRYPTION_KEY is missing.',
+    );
+  }
+  const state = await getConnectionState();
+  if (!state.connected) {
+    return check(
+      'meta_connection',
+      'Meta Connection',
+      'pending',
+      'Meta is configured but no Facebook Page has connected yet.',
+    );
+  }
+  const detail = [
+    `Facebook: ${state.facebook.connected ? state.facebook.pageName : 'not connected'}`,
+    `Instagram: ${state.instagram.connected ? (state.instagram.username ?? state.instagram.name) : 'not linked'}`,
+  ].join(' · ');
+  return check('meta_connection', 'Meta Connection', state.lastError ? 'error' : 'healthy', state.lastError ?? detail);
+}
+
+/** Separate from GBP's `cronCheck` — the two cron families never share a health line. */
+async function socialCronCheck(): Promise<HealthCheck> {
+  if (!isCronConfigured()) {
+    return check('social_cron', 'Automation / Social Cron', 'not_configured', 'CRON_SECRET is not set.');
+  }
+  if (!isMetaConfigured()) {
+    return check('social_cron', 'Automation / Social Cron', 'not_configured', 'Meta is not configured yet.');
+  }
+  const tasks: AutomationRunName[] = ['publish-social', 'generate-social-content'];
+  const runs = await Promise.all(tasks.map((t) => lastRunOf(t)));
+  const recent = runs.filter((r): r is NonNullable<typeof r> => r != null);
+  if (recent.length === 0) {
+    return check('social_cron', 'Automation / Social Cron', 'configured', 'Authenticated, but no job has run yet.');
+  }
+  const failed = recent.filter((r) => isGenuineSocialFailure(r));
+  return check(
+    'social_cron',
+    'Automation / Social Cron',
+    failed.length > 0 ? 'error' : 'healthy',
+    failed.length > 0 ? failed.map((r) => `${r.task}: ${r.summary}`).join(' | ') : 'Jobs are running on schedule.',
+  );
+}
+
 function notificationsCheck(): HealthCheck {
   // Part 16 of the upgrade brief: real-time GBP push notifications need Google
   // Cloud Pub/Sub, which is not wired up. Say so plainly rather than pretend.
@@ -189,11 +259,13 @@ function notificationsCheck(): HealthCheck {
 }
 
 export async function buildSystemHealthReport(): Promise<SystemHealthReport> {
-  const [oauth, gbpApi, aiProviders, cron] = await Promise.all([
+  const [oauth, gbpApi, aiProviders, cron, metaConnection, socialCron] = await Promise.all([
     oauthCheck(),
     gbpApiCheck(),
     aiProviderChecks(),
     cronCheck(),
+    metaConnectionCheck(),
+    socialCronCheck(),
   ]);
 
   const checks: HealthCheck[] = [
@@ -203,6 +275,8 @@ export async function buildSystemHealthReport(): Promise<SystemHealthReport> {
     ...aiProviders,
     storageCheck(),
     cron,
+    metaConnection,
+    socialCron,
     notificationsCheck(),
   ];
 

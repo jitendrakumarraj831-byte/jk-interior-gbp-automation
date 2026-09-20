@@ -306,3 +306,45 @@ export const InboxIcon = (p: IconProps) => (
     <path d="M5.6 5.5h12.8l2.1 8v4a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4z" />
   </Icon>
 );
+
+/** Generic "broadcast" glyph for the Social nav entry — not a Meta trademark. */
+export const SocialIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="6" cy="12" r="2.4" />
+    <circle cx="17.5" cy="6" r="2.4" />
+    <circle cx="17.5" cy="18" r="2.4" />
+    <path d="m8.1 10.8 7.3-3.6M8.1 13.2l7.3 3.6" />
+  </Icon>
+);
+
+/** Rounded "f" mark — a generic glyph, not the Facebook logo. */
+export const FacebookIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="5" />
+    <path d="M13.6 20v-6.2h2.1l.3-2.5h-2.4V9.6c0-.7.2-1.2 1.2-1.2h1.3V6.1c-.2 0-1-.1-1.9-.1-1.9 0-3.2 1.1-3.2 3.3v1.9H8.9v2.5H11V20" />
+  </Icon>
+);
+
+/** Rounded-square camera glyph — a generic Instagram-style icon, not the trademarked logo. */
+export const InstagramIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="5.5" />
+    <circle cx="12" cy="12" r="4" />
+    <circle cx="16.9" cy="7.1" r="0.9" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
+export const ImageIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+    <circle cx="8.5" cy="9.5" r="1.6" />
+    <path d="m4 17 5-5 3.5 3.5L17 10l3.2 3.2" />
+  </Icon>
+);
+
+export const CopyIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="9" y="9" width="12" height="12" rx="2.2" />
+    <path d="M6 15H4.8A1.8 1.8 0 0 1 3 13.2V4.8A1.8 1.8 0 0 1 4.8 3h8.4A1.8 1.8 0 0 1 15 4.8V6" />
+  </Icon>
+);
