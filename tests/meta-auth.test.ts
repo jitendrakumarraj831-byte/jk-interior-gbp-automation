@@ -74,11 +74,15 @@ describe('buildAuthUrl', () => {
     const scope = url.searchParams.get('scope');
     expect(scope).toContain('pages_show_list');
     expect(scope).toContain('pages_manage_posts');
-    expect(scope).toContain('instagram_business_basic');
-    expect(scope).toContain('instagram_business_content_publish');
-    // Deprecated scope names must never be requested.
-    expect(scope).not.toContain('instagram_basic');
-    expect(scope?.split(',')).not.toContain('instagram_content_publish');
+    // "Instagram API with Facebook Login" (the flow this app implements)
+    // uses these names.
+    expect(scope).toContain('instagram_basic');
+    expect(scope).toContain('instagram_content_publish');
+    // The instagram_business_* names belong to the separate "Instagram API
+    // with Instagram Login" flow (graph.instagram.com, no Facebook Page) —
+    // must never be requested here.
+    expect(scope).not.toContain('instagram_business_basic');
+    expect(scope).not.toContain('instagram_business_content_publish');
   });
 });
 

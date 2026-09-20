@@ -29,6 +29,28 @@ action once you connect a real account — see [Safe testing](#safe-testing).
 
 ## 2. Current API flow (as implemented)
 
+Meta currently offers **two separate ways** to get Instagram Graph API
+access, with different OAuth dialogs, different hosts, and — critically —
+**different, non-interchangeable permission names**:
+
+| | Instagram API **with Facebook Login** (implemented here) | Instagram API with Instagram Login |
+| --- | --- | --- |
+| Requires a Facebook Page? | Yes — the Instagram Professional account must be linked to a Page | No — logs in with Instagram credentials directly |
+| OAuth dialog | `facebook.com/{version}/dialog/oauth` | Instagram's own login dialog |
+| API host | `graph.facebook.com` | `graph.instagram.com` |
+| Instagram permission names | `instagram_basic`, `instagram_content_publish` | `instagram_business_basic`, `instagram_business_content_publish` |
+
+This project uses **Instagram API with Facebook Login** exclusively —
+JK Interior's Instagram is (and will be) linked to its Facebook Page, and
+every part of the implementation (OAuth dialog, token exchange, Page
+discovery, Instagram account discovery, and both publishing adapters) goes
+through `graph.facebook.com` only (`lib/meta/client.ts`, `lib/meta/auth.ts`).
+The `instagram_business_*` scope names are a different product's
+permissions and must never be requested here — mixing them into this flow's
+OAuth dialog is very likely to be rejected as an invalid scope, or fail App
+Review, since the reviewer's screencast has to match the product configured
+for your app.
+
 Pinned to **Graph API v26.0** (current stable as of this build; `META_API_VERSION`
 overrides it without a code change — Meta ships a new version roughly every
 quarter, and v20.0 is deprecated 2026-09-24).
@@ -81,20 +103,31 @@ first real connect, re-verify against the live docs (or Graph API Explorer):
 
 ## 3. Required permissions (least privilege)
 
+For **Instagram API with Facebook Login** (the flow this app implements —
+see §2's table):
+
 | Permission | Why |
 | --- | --- |
 | `pages_show_list` | Discover the Pages the admin manages |
 | `pages_read_engagement` | Read Page metadata during discovery |
 | `pages_manage_posts` | Publish to the Facebook Page |
-| `instagram_business_basic` | Read the linked Instagram Professional account |
-| `instagram_business_content_publish` | Publish to Instagram |
+| `instagram_basic` | Read the linked Instagram Professional account |
+| `instagram_content_publish` | Publish to Instagram |
 
-`instagram_business_basic` / `instagram_business_content_publish` are the
-**current** names — they replaced the deprecated `instagram_basic` /
-`instagram_content_publish` (retired 2025-01-27). Do not request the old
-names. All five require Meta App Review (screencast, 2–4 weeks) before they
-work for real end users; Development-mode testers can use them immediately
-against their own Page/IG account.
+Do **not** substitute `instagram_business_basic` /
+`instagram_business_content_publish` here — those are the current names for
+the separate **Instagram API with Instagram Login** flow (§2), which this
+project does not use. All five require Meta App Review (screencast, 2–4
+weeks) before they work for real end users; Development-mode testers can
+use them immediately against their own Page/IG account.
+
+An earlier draft of this build mixed the two flows' permission names
+(`instagram_business_basic`/`instagram_business_content_publish` requested
+against a Facebook Login dialog) — caught and corrected before the first
+real connect. If you're auditing this against Meta's own docs, verify this
+table directly against the Meta App Dashboard's permission picker with your
+app's product set to Facebook Login for Business + Instagram Graph API,
+which is the one source more authoritative than anything in this file.
 
 ## 4. Environment variables
 

@@ -67,18 +67,23 @@ export const GBP_SCOPE = 'https://www.googleapis.com/auth/business.manage';
 export const DEFAULT_META_API_VERSION = 'v26.0';
 
 /**
- * Least-privilege permission set for Facebook Page + Instagram Professional
- * publishing, per Meta's current (non-deprecated) permission names.
- * `instagram_business_basic` / `instagram_business_content_publish` replaced
- * the older `instagram_basic` / `instagram_content_publish`, deprecated
- * 2025-01-27 — never request the old names.
+ * Least-privilege permission set for "Instagram API with Facebook Login"
+ * (Page-linked — the flow this app implements; see lib/meta/auth.ts, which
+ * exchanges tokens and discovers the Page/IG account entirely through
+ * graph.facebook.com). `instagram_basic` / `instagram_content_publish` are
+ * this flow's current names.
+ *
+ * `instagram_business_basic` / `instagram_business_content_publish` belong
+ * to the *separate* "Instagram API with Instagram Login" flow
+ * (graph.instagram.com, no Facebook Page involved at all) — do not request
+ * them here; they are for a different product and a different OAuth dialog.
  */
 export const META_OAUTH_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
-  'instagram_business_basic',
-  'instagram_business_content_publish',
+  'instagram_basic',
+  'instagram_content_publish',
 ] as const;
 
 const envSchema = z.object({
