@@ -61,7 +61,7 @@ export function ReviewCard({
 
         {review.comment ? (
           <p
-            className={`mt-3 whitespace-pre-line text-sm leading-relaxed text-ink-700 ${
+            className={`wrap-any mt-3 whitespace-pre-line text-sm leading-relaxed text-ink-700 ${
               compact ? 'clamp-3' : ''
             }`}
           >
@@ -77,7 +77,7 @@ export function ReviewCard({
               Your reply on Google
             </p>
             <p
-              className={`mt-1.5 whitespace-pre-line text-sm leading-relaxed text-ink-700 ${
+              className={`wrap-any mt-1.5 whitespace-pre-line text-sm leading-relaxed text-ink-700 ${
                 compact ? 'clamp-3' : ''
               }`}
             >

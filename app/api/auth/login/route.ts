@@ -24,7 +24,6 @@ import {
   ok,
   parseJson,
   randomToken,
-  recordLoginFailure,
   safeEqual,
   sessionCookieOptions,
 } from '@/lib/security';
@@ -55,7 +54,6 @@ export async function POST(request: Request) {
 
     const { password } = await parseJson(request, bodySchema);
     if (!safeEqual(password, env().ADMIN_PASSWORD)) {
-      await recordLoginFailure(request);
       log.warn('auth', 'Failed admin sign-in attempt.');
       throw new AppError('UNAUTHORIZED', 'Incorrect password.', 401);
     }

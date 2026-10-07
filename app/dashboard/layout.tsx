@@ -1,7 +1,7 @@
 /**
  * Dashboard shell.
  *
- * This is where admin access is really enforced: middleware only checks that a
+ * This is where admin access is really enforced: the proxy only checks that a
  * cookie exists, but this server component verifies its HMAC signature and
  * expiry before rendering anything.
  */

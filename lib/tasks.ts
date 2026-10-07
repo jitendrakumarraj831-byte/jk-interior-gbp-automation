@@ -13,24 +13,31 @@
 import { generateReplyDraft } from './ai-reply';
 import { recordAudit } from './audit';
 import { env, isAiConfigured, isMockModeActive } from './config';
-import { recordAccessFailure, shouldSkipGoogleCalls, type GbpAccessStatus } from './gbp-access';
+import { shouldSkipGoogleCalls } from './gbp-access';
 import {
   isMockResourceName,
   mockReviewsResult,
-  simulatePostPublish,
   simulatePublish,
 } from './gbp-mock';
+import { statusFromErrorCode, type GbpAccessStatus, type GbpService } from './gbp-status';
 import { resolveTarget } from './connection';
 import { AppError } from './errors';
-import { createLocalPost, fetchPerformance, listReviews, publishReviewReply } from './google-business';
+import { fetchPerformance, listReviews, publishReviewReply } from './google-business';
 import { log } from './logger';
 import { notify } from './notifications';
 import {
-  findDraftByReviewId,
+  failureMessage,
+  isTransientFailure,
+  publishPostOnce,
+  STALE_PUBLISHING_MS,
+} from './post-publisher';
+import {
   getCachedReviews,
   getSettings,
   listDrafts,
   listDuePosts,
+  listPosts,
+  markCachedReviewReplied,
   newId,
   recordRun,
   saveDraft,
@@ -39,6 +46,7 @@ import {
   setCachedReviews,
   type ReviewCache,
 } from './repository';
+import { withLock } from './store';
 import type { AutomationRun, AutomationRunName, ReplyDraft, Review } from './types';
 
 type TaskResult = Omit<AutomationRun, 'task' | 'startedAt' | 'finishedAt'>;
@@ -69,19 +77,25 @@ function skippedForAccessStatus(status: Extract<GbpAccessStatus, 'pending' | 'ra
 }
 
 /**
- * True when this task should not call Google at all right now.
+ * True when this task should not call Google at all right now: the API it needs
+ * recently answered "closed" (approval pending / API not enabled) and nothing
+ * has succeeded since. The gate is short and lifts the moment any Google call
+ * succeeds — see lib/gbp-access.ts.
  * Mock mode never skips: it makes no Google calls in the first place.
  */
-async function shouldSkipGbpWork(): Promise<boolean> {
+async function shouldSkipGbpWork(service: GbpService): Promise<boolean> {
   if (isMockModeActive()) return false;
-  return shouldSkipGoogleCalls();
+  return shouldSkipGoogleCalls({ service });
 }
 
 /**
- * Caches a classified failure so the next cron run can skip early, and — for
- * a genuine fault rather than the expected pending/rate-limited states —
- * raises a "Google API Issue" notification. Deduped to once per code per day
- * so a run failing every few minutes does not flood the notification list.
+ * Classifies a Google failure for a cron task and — for a genuine fault rather
+ * than the expected pending/rate-limited states — raises a "Google API Issue"
+ * notification, deduped to once per code per day so a job failing repeatedly
+ * does not flood the notification list.
+ *
+ * The access state itself is NOT written here: every Google call records its
+ * own outcome in lib/google-business.ts, so there is nothing to duplicate.
  *
  * Returns the classified status (or null when `error` wasn't a recognised
  * AppError) so the caller can decide whether this was an expected wait
@@ -90,7 +104,7 @@ async function shouldSkipGbpWork(): Promise<boolean> {
  */
 async function noteGoogleFailure(error: unknown): Promise<GbpAccessStatus | null> {
   if (!(error instanceof AppError)) return null;
-  const status = await recordAccessFailure(error.code);
+  const status = statusFromErrorCode(error.code);
   if (status !== 'auth_error' && status !== 'permission_error' && status !== 'error') return status;
 
   const day = new Date().toISOString().slice(0, 10);
@@ -113,26 +127,57 @@ function isExpectedWait(status: GbpAccessStatus | null): status is 'pending' | '
   return status === 'pending' || status === 'rate_limited';
 }
 
-/** Runs a task, records the outcome + an audit entry, and never lets it throw past the caller. */
+/** Longer than any cron run (maxDuration is 60s); frees itself if a run crashes. */
+const TASK_LOCK_SECONDS = 5 * 60;
+
+/**
+ * Runs a task, records the outcome + an audit entry, and never lets it throw
+ * past the caller.
+ *
+ * Each task holds a lock while it runs. A cron retry, a slow run overlapping
+ * the next trigger or a manual call made at the same moment therefore cannot
+ * run the same job twice (double drafts, double posts). The overlapping call
+ * returns a "skipped" run WITHOUT recording it, so it can never overwrite the
+ * real run's result in the history.
+ */
 async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): Promise<AutomationRun> {
   const startedAt = new Date().toISOString();
   let result: TaskResult;
 
-  try {
-    result = await fn();
-  } catch (error) {
+  const locked = await withLock(`task:${task}`, TASK_LOCK_SECONDS, async () => {
+    try {
+      return await fn();
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  });
+
+  if (!locked.ran) {
+    return {
+      task,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      ok: true,
+      summary: 'Skipped — this job is already running.',
+      details: { status: 'skipped', reason: 'already_running' },
+    };
+  }
+
+  const outcome = locked.value;
+  if (outcome instanceof Error) {
+    const error = outcome;
     const message =
       error instanceof AppError ? error.message : 'Unexpected failure while running the task.';
     if (!(error instanceof AppError)) {
-      log.error('tasks', `Task ${task} crashed`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      log.error('tasks', `Task ${task} crashed`, { error: error.message });
     }
     result = {
       ok: false,
       summary: message,
       details: { code: error instanceof AppError ? error.code : 'INTERNAL' },
     };
+  } else {
+    result = outcome;
   }
 
   const run: AutomationRun = { task, startedAt, finishedAt: new Date().toISOString(), ...result };
@@ -150,6 +195,8 @@ async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): 
   return run;
 }
 
+const NEW_REVIEW_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * Notifies about reviews that were not present the last time we synced.
  * Skipped entirely on the very first sync (no `previousCache` yet) — with no
@@ -158,7 +205,12 @@ async function runTask(task: AutomationRunName, fn: () => Promise<TaskResult>): 
 async function notifyNewReviews(reviews: Review[], previousCache: ReviewCache | null): Promise<void> {
   if (!previousCache) return;
   const previousIds = new Set(previousCache.reviews.map((r) => r.reviewId));
-  const fresh = reviews.filter((r) => !previousIds.has(r.reviewId));
+  // The synced window is only the newest reviews, so an old one edited on Google
+  // can enter it. Only a review actually written recently counts as "new".
+  const cutoff = Date.now() - NEW_REVIEW_WINDOW_MS;
+  const fresh = reviews.filter(
+    (r) => !previousIds.has(r.reviewId) && Date.parse(r.createTime) >= cutoff,
+  );
 
   for (const review of fresh) {
     await notify({
@@ -189,7 +241,7 @@ export function applyDraftStatus(reviews: Review[], drafts: ReplyDraft[]): Revie
 
 export async function syncReviews(): Promise<AutomationRun> {
   return runTask('sync-reviews', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
+    if (await shouldSkipGbpWork('reviews')) return skippedForAccessStatus('pending');
 
     const drafts = await listDrafts();
     const previousCache = await getCachedReviews();
@@ -261,7 +313,7 @@ export async function generateDrafts(): Promise<AutomationRun> {
       return { ok: true, summary: 'Automatic draft generation is turned off in Settings.' };
     }
 
-    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
+    if (await shouldSkipGbpWork('reviews')) return skippedForAccessStatus('pending');
 
     let reviews;
     if (isMockModeActive()) {
@@ -285,15 +337,22 @@ export async function generateDrafts(): Promise<AutomationRun> {
     let skipped = 0;
     let failed = 0;
 
+    // One read of the existing drafts, not one full scan per review.
+    const existingDrafts = await listDrafts();
+    const draftedReviewIds = new Set(existingDrafts.map((d) => d.reviewId));
+    const existingReplies = new Set(existingDrafts.map((d) => normalizeReply(d.text)));
+
     for (const review of candidates) {
       if (created >= MAX_DRAFTS_PER_RUN) break;
-      if (await findDraftByReviewId(review.reviewId)) {
+      if (draftedReviewIds.has(review.reviewId)) {
         skipped += 1;
         continue;
       }
       try {
-        const draft = await createDraftForReview(review);
+        const draft = await createDraftForReview(review, existingReplies);
         await saveDraft(draft);
+        draftedReviewIds.add(review.reviewId);
+        existingReplies.add(normalizeReply(draft.text));
         created += 1;
         await notify({
           category: 'ai_draft_ready',
@@ -319,10 +378,23 @@ export async function generateDrafts(): Promise<AutomationRun> {
   });
 }
 
-/** Builds (but does not persist) a draft for a review. */
-export async function createDraftForReview(review: Review): Promise<ReplyDraft> {
+const normalizeReply = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Builds (but does not persist) a draft for a review. `existingReplies` is the
+ * wording of replies already drafted or published; an identical one is flagged,
+ * because the same sentence under many reviews reads as automated.
+ */
+export async function createDraftForReview(
+  review: Review,
+  existingReplies?: Set<string>,
+): Promise<ReplyDraft> {
   const generated = await generateReplyDraft(review);
   const now = new Date().toISOString();
+  const flags = [...generated.flags];
+  if (existingReplies?.has(normalizeReply(generated.text))) {
+    flags.push('Identical to another reply you already have');
+  }
   return {
     id: newId(),
     reviewId: review.reviewId,
@@ -335,6 +407,7 @@ export async function createDraftForReview(review: Review): Promise<ReplyDraft> 
     language: generated.language,
     status: 'draft_pending',
     model: generated.model,
+    ...(flags.length > 0 ? { flags } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -357,8 +430,11 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
   // outcome. System Health reads exactly that slot, so a genuine syncReviews
   // failure could be hidden behind this task's unrelated (usually no-op) result.
   return runTask('publish-replies', async (): Promise<TaskResult> => {
+    // AUTO_PUBLISH_REPLIES is the master switch: with it off (the default) no
+    // dashboard toggle can start automatic publishing. With it on, the
+    // dashboard toggle is the deliberate second step that actually enables it.
     const settings = await getSettings();
-    const autoPublish = settings.autoPublishReplies || env().AUTO_PUBLISH_REPLIES;
+    const autoPublish = env().AUTO_PUBLISH_REPLIES && settings.autoPublishReplies;
     if (!autoPublish) {
       return {
         ok: true,
@@ -367,7 +443,9 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
       };
     }
 
-    const drafts = (await listDrafts()).filter((d) => d.status === 'approved');
+    // Only drafts a human explicitly approved, and only real Google replies in
+    // production. Anything without an approval timestamp is never touched.
+    const drafts = (await listDrafts()).filter((d) => d.status === 'approved' && d.approvedAt);
     let published = 0;
     let failed = 0;
 
@@ -386,6 +464,7 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
           simulatePublish(draft.reviewName);
         } else {
           await publishReviewReply(draft.reviewName, draft.text);
+          await markCachedReviewReplied(draft.reviewName, draft.text);
         }
         await saveDraft({
           ...draft,
@@ -429,44 +508,84 @@ export async function publishApprovedReplies(): Promise<AutomationRun> {
 
 /* --------------------------- publish due posts --------------------------- */
 
+/**
+ * A post left in `publishing` this long was interrupted mid-flight (the
+ * function crashed or timed out). It may or may not have reached Google, so it
+ * is NOT retried automatically — that could post it twice. It is marked failed
+ * with an instruction instead, and the owner decides.
+ */
+async function recoverInterruptedPosts(): Promise<number> {
+  const cutoff = Date.now() - STALE_PUBLISHING_MS;
+  const stuck = (await listPosts()).filter(
+    (p) => p.status === 'publishing' && Date.parse(p.updatedAt) < cutoff,
+  );
+  for (const post of stuck) {
+    await savePost({
+      ...post,
+      status: 'failed',
+      error:
+        'Publishing was interrupted. Check your Google profile for this post before retrying, so it is not posted twice.',
+    });
+  }
+  return stuck.length;
+}
+
+/** Automatic attempts at a scheduled post that keeps hitting temporary Google faults. */
+const MAX_AUTO_ATTEMPTS = 3;
+
 export async function publishScheduledPosts(): Promise<AutomationRun> {
   return runTask('publish-posts', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
+    if (await shouldSkipGbpWork('posts')) return skippedForAccessStatus('pending');
+
+    const recovered = await recoverInterruptedPosts();
 
     const due = await listDuePosts();
     if (due.length === 0) {
-      return { ok: true, summary: 'No scheduled posts were due.', details: { due: 0 } };
+      return {
+        ok: true,
+        summary: 'No scheduled posts were due.',
+        details: { due: 0, recovered },
+      };
     }
 
+    // The target is resolved once, and only for a real run — mock mode never
+    // touches it, so no Google call can occur.
     const mock = isMockModeActive();
-    // In mock mode the target is never resolved, so no Google call can occur.
-    let target = null;
+    let locationPath: string | null = null;
     if (!mock) {
       try {
-        target = await resolveTarget();
+        locationPath = (await resolveTarget()).locationPath;
       } catch (error) {
         const status = await noteGoogleFailure(error);
         if (isExpectedWait(status)) return skippedForAccessStatus(status);
         throw error;
       }
     }
+
     let published = 0;
     let skipped = 0;
     let failed = 0;
 
     for (const post of due) {
-      await savePost({ ...post, status: 'publishing' });
-      try {
-        const googlePostName = mock
-          ? simulatePostPublish(post.id)
-          : await createLocalPost(target!.locationPath, post);
+      // Claim, re-read, de-duplicate and publish — see lib/post-publisher.ts.
+      const outcome = await publishPostOnce(post, async () => locationPath!);
+
+      if (outcome.kind === 'busy' || outcome.kind === 'skipped') {
+        skipped += 1;
+        continue;
+      }
+
+      if (outcome.kind === 'duplicate') {
+        failed += 1;
         await savePost({
           ...post,
-          status: 'published',
-          googlePostName,
-          publishedAt: new Date().toISOString(),
-          error: undefined,
+          status: 'failed',
+          error: 'Not published: an identical post was published or queued within the last day.',
         });
+        continue;
+      }
+
+      if (outcome.kind === 'published') {
         published += 1;
         await notify({
           category: 'post_published',
@@ -482,45 +601,57 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
           status: 'success',
           source: 'cron',
         });
-      } catch (error) {
-        // createLocalPost() is a second Google call site (resolveTarget()
-        // above frequently makes none at all, when the target is pinned or
-        // already selected) — pending/rate-limited responses here must be
-        // classified the same way, not counted as a publish failure.
-        const status = mock ? null : await noteGoogleFailure(error);
-        if (isExpectedWait(status)) {
-          // Leave it scheduled — cron picks it up again once Google answers.
-          // Stop this run's loop rather than hammering a known rate limit
-          // with every other due post.
-          await savePost({ ...post, status: 'scheduled', error: undefined });
-          skipped += 1;
-          break;
-        }
+        continue;
+      }
 
-        failed += 1;
-        // Stays 'failed', never 'published' — we do not claim a post went live.
+      // outcome.kind === 'failed'
+      const status = mock ? null : await noteGoogleFailure(outcome.error);
+      if (isExpectedWait(status)) {
+        // Leave it scheduled — cron picks it up again once Google answers.
+        // Stop this run's loop rather than hammering a known rate limit with
+        // every other due post.
+        await savePost({ ...post, status: 'scheduled', error: undefined });
+        skipped += 1;
+        break;
+      }
+
+      const attempts = (post.attempts ?? 0) + 1;
+      if (isTransientFailure(outcome.error) && attempts < MAX_AUTO_ATTEMPTS) {
+        // A Google hiccup should not permanently fail a post that is due.
         await savePost({
           ...post,
-          status: 'failed',
-          error: error instanceof AppError ? error.message : 'Publishing failed.',
+          status: 'scheduled',
+          attempts,
+          error: 'Google had a temporary problem. It will be retried on the next run.',
         });
-        await recordAudit({
-          actor: 'cron',
-          action: 'post_published',
-          resource: post.id,
-          status: 'failure',
-          source: 'cron',
-        });
+        skipped += 1;
+        continue;
       }
+
+      failed += 1;
+      // Stays 'failed', never 'published' — we do not claim a post went live.
+      await savePost({
+        ...post,
+        status: 'failed',
+        attempts,
+        error: failureMessage(outcome.error),
+      });
+      await recordAudit({
+        actor: 'cron',
+        action: 'post_published',
+        resource: post.id,
+        status: 'failure',
+        source: 'cron',
+      });
     }
 
     return {
       ok: failed === 0,
       summary:
         skipped > 0
-          ? `Published ${published} of ${due.length} due post(s); ${skipped} skipped (Google Business Profile API pending/rate limited), ${failed} failed.`
+          ? `Published ${published} of ${due.length} due post(s); ${skipped} left for the next run, ${failed} failed.`
           : `Published ${published} of ${due.length} due post(s); ${failed} failed.`,
-      details: { due: due.length, published, skipped, failed },
+      details: { due: due.length, published, skipped, failed, recovered },
     };
   });
 }
@@ -529,7 +660,7 @@ export async function publishScheduledPosts(): Promise<AutomationRun> {
 
 export async function syncPerformance(days = 30): Promise<AutomationRun> {
   return runTask('sync-performance', async (): Promise<TaskResult> => {
-    if (await shouldSkipGbpWork()) return skippedForAccessStatus('pending');
+    if (await shouldSkipGbpWork('performance')) return skippedForAccessStatus('pending');
     if (isMockModeActive()) {
       return {
         ok: true,
@@ -547,7 +678,7 @@ export async function syncPerformance(days = 30): Promise<AutomationRun> {
       if (isExpectedWait(status)) return skippedForAccessStatus(status);
       throw error;
     }
-    await setCachedPerformance(snapshot);
+    await setCachedPerformance(snapshot, days);
     await notify({
       category: 'performance_report_ready',
       title: 'Performance data updated',

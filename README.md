@@ -53,24 +53,46 @@ Admin console and automation system for the **JK Interior** Google Business Prof
 | System Health Center | Built — reads existing status, no extra Google/AI calls |
 | Health / status monitoring | Built — `/api/health` works today |
 
-### While Business Profile API access is pending
+### How Google access is tracked (and why "pending" cannot get stuck)
 
-Google keeps a project at **0 requests per minute** until it approves the
-Business Profile API request, so every GBP call returns 403 even though OAuth is
-completely healthy. The app treats those as two separate things:
+Google splits Business Profile into several APIs — accounts, locations,
+reviews/posts and performance — each with its own quota and its own approval
+state, and OAuth can be perfectly healthy while any of them answers 403/429.
+The app therefore tracks them separately and derives **one** status from them.
+That status is the single source of truth: the Dashboard, Settings, the Google
+Connection page, System Health and `/api/health` all read the same stored
+snapshot.
 
 | | Meaning |
 | --- | --- |
 | **Google account** | The refresh token works. Proven by refreshing the access token, which is unaffected by GBP quota. |
-| **Business Profile API** | `available`, `pending`, `rate_limited`, `auth_error`, `permission_error` or `error`. |
+| **Business Profile API** | `available`, `pending`, `rate_limited`, `auth_error`, `permission_error`, `error` (or `unknown` before the first check). |
 
-A pending result is cached through the existing store with a **6-hour cooldown**,
-so cron and the dashboard stop re-asking an endpoint that is known to be closed.
-GBP-dependent cron jobs then record `status: skipped`, `reason:
-gbp_access_pending` and still return a healthy response — a skipped job is the
-system waiting correctly, not a failure. The refresh token is never deleted and
-the account is never marked disconnected. When Google approves and quota opens,
-the cooldown lapses and normal operation resumes with no manual step.
+How the status is decided:
+
+- **Every Google call records its own outcome** (`lib/google-business.ts` →
+  `lib/gbp-access.ts`), whoever made it — a page load, a cron job, a publish.
+  There is no special "probe" that has to run for the state to update.
+- **A success always wins.** As soon as *any* API answers successfully the
+  overall status is `available`, immediately and durably (Upstash). An older
+  "pending" can never outweigh it; APIs that still fail are listed separately
+  as "not available yet".
+- **Precise classification.** HTTP 429/403 with a quota limit of **0** means
+  approval is *pending*. A different quota is a temporary *rate limit*. A 403
+  "API disabled" is a *permission* problem with an instruction to enable the
+  API — not "pending". 401 and "insufficient scope" mean *reconnect*. 404, 409
+  and 400 say nothing about access and change nothing. 5xx is a Google outage.
+- **No hammering.** A known-closed API is skipped by background jobs for at most
+  **15 minutes**, and only while no other API has succeeded since. When the
+  state is not `available`, the next page load re-verifies it automatically
+  (once per cooldown, shared across concurrent loads).
+- **Check access now.** The Connection and Settings pages have a button that
+  re-verifies every API immediately, bypassing the cooldown (throttled to one
+  check per 10 seconds, five small read-only Google calls).
+- **A skipped job is not a failure.** GBP-dependent cron jobs record
+  `status: skipped` while Google is closed or rate limiting, and still report
+  healthy. The refresh token is never deleted and the account is never marked
+  disconnected by a Google error.
 
 ### Safe mock mode
 
@@ -115,10 +137,17 @@ Models are configurable per provider (`GROQ_MODEL`, `GEMINI_MODEL`,
 Google review  →  AI draft  →  Dashboard  →  You approve / edit  →  Published to Google
 ```
 
-Automatic publishing is **off by design**. Two independent gates guard it:
-a draft must be explicitly `approved`, *and* auto-publish must be turned on
-(Settings toggle or `AUTO_PUBLISH_REPLIES=true`). With auto-publish off — the
-default — approved replies wait for you to press **Publish**.
+Automatic publishing is **off by design**, and three independent gates guard it:
+
+1. a draft must be explicitly `approved` by a person (status *and* approval
+   timestamp) — editing the text of an approved draft withdraws the approval;
+2. `AUTO_PUBLISH_REPLIES=true` must be set in the environment — this is the
+   **master switch**: with it `false` (the default) the dashboard toggle is
+   locked off and automatic publishing is impossible;
+3. the **Publish approved replies automatically** toggle in Settings must then
+   be switched on — a second, deliberate step.
+
+With any gate closed, approved replies wait for you to press **Publish**.
 
 ---
 
@@ -165,7 +194,16 @@ Copy `.env.example` → `.env.local`. **Never commit `.env.local`.**
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 web client ID |
 | `GOOGLE_CLIENT_SECRET` | OAuth 2.0 client secret |
 | `GOOGLE_REDIRECT_URI` | Must match the OAuth client exactly |
-| `GOOGLE_REFRESH_TOKEN` | Long-lived token for the Business Profile owner |
+| `GOOGLE_REFRESH_TOKEN` | Optional. Long-lived token for the Business Profile owner. **Connect Google** in the dashboard stores its own token, and that stored token always takes priority over this variable (see below). |
+
+**Which refresh token is used.** One deterministic rule: a token saved by the
+dashboard's **Connect Google** flow always wins; `GOOGLE_REFRESH_TOKEN` is the
+fallback when nothing is saved (and a one-shot fallback if the saved token has
+been revoked). **Disconnect** deletes the saved token, revokes it at Google, and
+makes the app *ignore* `GOOGLE_REFRESH_TOKEN` until you reconnect (or change that
+variable) — so Disconnect really disconnects. Remove the variable in Vercel to
+tidy up. The Connection page shows which source is in use; a token is never sent
+to the browser, returned by any API, or written to a log.
 
 ### Required in production
 
@@ -197,7 +235,7 @@ Copy `.env.example` → `.env.local`. **Never commit `.env.local`.**
 | `UPSTASH_REDIS_REST_TOKEN` | — | Paired with the URL above |
 | `GBP_ACCOUNT_NAME` | auto-detected | Pin the account, e.g. `accounts/1234567890` |
 | `GBP_LOCATION_NAME` | auto-detected | Pin the location, e.g. `locations/1234567890` |
-| `AUTO_PUBLISH_REPLIES` | `false` | Keep this `false`. |
+| `AUTO_PUBLISH_REPLIES` | `false` | **Master switch** for automatic reply publishing. Keep it `false` unless you deliberately want cron to publish approved replies; while `false`, nothing — including the Settings toggle — can start auto-publishing. |
 | `GBP_MOCK_MODE` | `false` | Simulated Business Profile for testing. Ignored on the production deployment. |
 
 Generate the two random secrets with:
@@ -410,11 +448,12 @@ When the approval email arrives:
 1. Confirm the four APIs from §4 are **Enabled** and quota is above zero.
 2. Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` and
    `GOOGLE_REFRESH_TOKEN` in Vercel, then redeploy.
-3. Open **Dashboard → Google Connection**. It should read **Connected**, and
-   your accounts and locations should list.
+3. Open **Dashboard → Google Connection** and press **Check access now**. It
+   should read **Connected & Active**, and your accounts and locations should
+   list. (It also notices approval on its own within about 15 minutes.)
 4. Pick the JK Interior location (or pin it with `GBP_ACCOUNT_NAME` /
    `GBP_LOCATION_NAME`).
-5. Check `/api/health` — `googleConfigured` flips to `true`.
+5. Check `/api/health` — `gbpApiAccess` reads `available`.
 6. Open **Reviews**. Live reviews load.
 7. Add `GROQ_API_KEY` (and optionally `GEMINI_API_KEY` / `OPENAI_API_KEY`) to enable drafting, then **Drafts** to approve replies.
 
@@ -440,7 +479,7 @@ No code changes are required at any step.
 - **Admin session** — HMAC-signed, httpOnly, `SameSite=Lax`, `Secure` in
   production, 12-hour expiry. The session cookie is unreachable from JavaScript.
   Verified server-side in the dashboard layout and in every API route via
-  `assertAdmin()`; middleware only handles redirects and cannot be the sole gate.
+  `assertAdmin()`; the proxy only handles redirects and cannot be the sole gate.
 - **CSRF protection** on every state-changing admin request — a strict `Origin`
   check (falling back to `Referer`) plus a double-submit token: the `jk_csrf`
   cookie must match the `x-csrf-token` header. The CSRF cookie is deliberately
@@ -555,7 +594,7 @@ components/
   ui.tsx             Cards, badges, buttons, alerts, stat tiles, stars
   nav.tsx            Desktop rail + mobile tab bar and sheet
 
-middleware.ts        Redirects unauthenticated visitors to /login
+proxy.ts             Redirects unauthenticated visitors to /login
 scripts/get-refresh-token.mjs
 ```
 

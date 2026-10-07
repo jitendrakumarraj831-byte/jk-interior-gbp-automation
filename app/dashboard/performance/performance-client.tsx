@@ -8,9 +8,9 @@
  * data the page says so rather than drawing an empty chart.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, ApiError, formatDate } from '@/lib/client';
+import { api, ApiError, formatDate, relativeTime } from '@/lib/client';
 import { MetricBars, MetricTable, Sparkline, TrendChart } from '@/components/charts';
 import { StatusNotice } from '@/components/status-notice';
 import {
@@ -39,7 +39,13 @@ import {
 } from '@/components/ui';
 import type { DailyMetric, MetricSeries, PerformanceSnapshot } from '@/lib/types';
 
-type Payload = { snapshot: PerformanceSnapshot; source: 'google' | 'cache' };
+type Payload = {
+  snapshot: PerformanceSnapshot;
+  /** 'google' = fetched just now. 'cache' = an earlier snapshot, shown because Google could not answer. */
+  source: 'google' | 'cache';
+  fetchedAt: string;
+  cacheReason?: string;
+};
 
 const INTERACTIONS: DailyMetric[] = [
   'CALL_CLICKS',
@@ -100,13 +106,24 @@ export default function PerformanceClient() {
   const [focus, setFocus] = useState<DailyMetric | 'views'>('views');
   const [showTable, setShowTable] = useState(false);
 
+  // Switching ranges quickly must not let a slow earlier response overwrite the
+  // newer one — that would show 7-day numbers under a "90 days" label.
+  const requestId = useRef(0);
+
   const load = useCallback(async (range: number) => {
+    const mine = ++requestId.current;
     try {
       const response = await api.get<Payload>(`/api/performance?days=${range}`);
+      if (mine !== requestId.current) return;
       setPayload(response.data);
-      setCacheMessage(response.data?.source === 'cache' ? response.message : null);
+      setCacheMessage(
+        response.data?.source === 'cache'
+          ? (response.data.cacheReason ?? 'Google could not be reached for fresh data.')
+          : null,
+      );
       setNotice(null);
     } catch (caught) {
+      if (mine !== requestId.current) return;
       const error = caught instanceof ApiError ? caught : null;
       setNotice({
         status: error?.status ?? 'error',
@@ -114,7 +131,7 @@ export default function PerformanceClient() {
       });
       setPayload(null);
     } finally {
-      setLoading(false);
+      if (mine === requestId.current) setLoading(false);
     }
   }, []);
 
@@ -199,7 +216,7 @@ export default function PerformanceClient() {
         {payload ? (
           <div className="flex items-center gap-2">
             <Badge tone={payload.source === 'google' ? 'success' : 'warning'} dot>
-              {payload.source === 'google' ? 'Live' : 'Cached'}
+              {payload.source === 'google' ? 'Live' : `Cached · ${relativeTime(payload.fetchedAt)}`}
             </Badge>
             <span className="hidden text-xs text-ink-400 sm:inline">
               {formatDate(payload.snapshot.rangeStart)} – {formatDate(payload.snapshot.rangeEnd)}
@@ -224,8 +241,12 @@ export default function PerformanceClient() {
 
       {cacheMessage ? (
         <div className="mb-5">
-          <Callout tone="warning" title="Showing the last synced snapshot" icon={<InfoIcon size={18} />}>
+          <Callout tone="warning" title="Not live — showing the last synced snapshot" icon={<InfoIcon size={18} />}>
             <p>{cacheMessage}</p>
+            <p className="mt-1 text-ink-500">
+              These numbers are from {payload ? relativeTime(payload.fetchedAt) : 'an earlier sync'} and
+              may be out of date.
+            </p>
           </Callout>
         </div>
       ) : null}

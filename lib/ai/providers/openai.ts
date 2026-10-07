@@ -14,7 +14,7 @@ let client: OpenAI | null = null;
 
 function sdk(): OpenAI {
   // No baseURL: this one really is OpenAI, so the SDK default applies.
-  if (!client) client = new OpenAI({ apiKey: env().OPENAI_API_KEY });
+  if (!client) client = new OpenAI({ apiKey: env().OPENAI_API_KEY, maxRetries: 0 });
   return client;
 }
 

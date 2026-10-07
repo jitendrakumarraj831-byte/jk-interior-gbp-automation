@@ -190,10 +190,15 @@ export function isOAuthConfigured(): boolean {
 
 /**
  * True when we hold everything needed to call Google on the business's behalf.
- * A refresh token may come from the environment or from the OAuth callback.
+ *
+ * `hasCredential` is the answer from lib/google-auth (`getCredentialState`),
+ * which already applies the stored-token / environment-token / disconnected
+ * rules. It is passed in rather than read from GOOGLE_REFRESH_TOKEN here,
+ * because that variable alone no longer proves a usable credential: a
+ * Disconnect deliberately makes the app ignore it.
  */
-export function isGoogleConfigured(refreshTokenFromStore?: string | null): boolean {
-  return isOAuthConfigured() && Boolean(env().GOOGLE_REFRESH_TOKEN || refreshTokenFromStore);
+export function isGoogleConfigured(hasCredential = false): boolean {
+  return isOAuthConfigured() && hasCredential;
 }
 
 export function groqModel(): string {
@@ -416,12 +421,12 @@ export type ConfigSummary = {
   };
 };
 
-export function configSummary(refreshTokenFromStore?: string | null): ConfigSummary {
+export function configSummary(hasGoogleCredential = false): ConfigSummary {
   const e = env();
   return {
     business: { name: BUSINESS.name, website: BUSINESS.website },
     oauthConfigured: isOAuthConfigured(),
-    googleConfigured: isGoogleConfigured(refreshTokenFromStore),
+    googleConfigured: isGoogleConfigured(hasGoogleCredential),
     aiConfigured: isAiConfigured(),
     aiProviderOrder: aiProviderOrder(),
     aiProvidersConfigured: {
@@ -452,7 +457,7 @@ export function configSummary(refreshTokenFromStore?: string | null): ConfigSumm
 }
 
 /** Human-readable warnings shown in the dashboard. Never includes secrets. */
-export function configWarnings(refreshTokenFromStore?: string | null): string[] {
+export function configWarnings(hasGoogleCredential = false): string[] {
   const warnings: string[] = [];
   const e = env();
 
@@ -460,10 +465,33 @@ export function configWarnings(refreshTokenFromStore?: string | null): string[] 
     warnings.push(
       'Google OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI.',
     );
-  } else if (!isGoogleConfigured(refreshTokenFromStore)) {
+  } else if (!isGoogleConfigured(hasGoogleCredential)) {
     warnings.push(
       'Google OAuth client is configured but the business account is not connected yet. Use "Connect Google".',
     );
+  }
+  if (isProduction() && isOAuthConfigured()) {
+    const redirect = e.GOOGLE_REDIRECT_URI;
+    let redirectOk = false;
+    try {
+      const url = new URL(redirect);
+      redirectOk = url.protocol === 'https:' && url.pathname === '/api/auth/google/callback';
+    } catch {
+      redirectOk = false;
+    }
+    if (!redirectOk) {
+      warnings.push(
+        'GOOGLE_REDIRECT_URI should be https://<your-domain>/api/auth/google/callback in production, and must match the OAuth client exactly.',
+      );
+    }
+  }
+  if (isProduction() && isAdminAuthConfigured()) {
+    if (e.SESSION_SECRET.length < 32) {
+      warnings.push('SESSION_SECRET is shorter than 32 characters. Use a long random value.');
+    }
+    if (e.ADMIN_PASSWORD.length < 12) {
+      warnings.push('ADMIN_PASSWORD is shorter than 12 characters. Use a longer passphrase.');
+    }
   }
   if (!isAiConfigured()) {
     warnings.push(

@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { api, ApiError, relativeTime, scheduleLabel } from '@/lib/client';
+import { api, ApiError, formatDate, relativeTime, scheduleLabel } from '@/lib/client';
 import { ReviewCard } from '@/components/review-card';
 import { SetupChecklist, type SetupConfig } from '@/components/setup-checklist';
 import {
@@ -56,6 +56,7 @@ import {
   StatusPill,
   type Tone,
 } from '@/components/ui';
+import { GBP_SERVICE_LABEL } from '@/lib/gbp-status';
 import type { AutomationRun, DashboardSummary, GbpPost, PerformanceSnapshot } from '@/lib/types';
 
 type SettingsPayload = {
@@ -64,8 +65,10 @@ type SettingsPayload = {
     aiProviderOrder: string[];
     aiProvidersConfigured: Record<string, boolean>;
     aiModels: Record<string, string>;
+    business: { name: string };
   };
   gbpAccess: { status: string; message: string };
+  runtime: { storeReachable: boolean; lastCronRunAt: string | null; cronFailed: boolean };
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -73,54 +76,120 @@ const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Gemini',
   openai: 'OpenAI',
 };
-type PerformancePayload = { snapshot: PerformanceSnapshot; source: 'google' | 'cache' };
+type PerformancePayload = {
+  snapshot: PerformanceSnapshot;
+  source: 'google' | 'cache';
+  fetchedAt: string;
+  cacheReason?: string;
+};
 
+/** Drives colour from the structured status — never from label text. */
 function connectionTone(summary: DashboardSummary | null): Tone {
   if (!summary) return 'neutral';
-  if (summary.connection.connected) return 'google';
-  if (summary.connection.label === 'Approval pending') return 'warning';
-  if (summary.connection.label === 'Connection problem') return 'danger';
-  return 'neutral';
+  switch (summary.connection.status) {
+    case 'available':
+      return 'google';
+    case 'pending':
+    case 'rate_limited':
+      return 'warning';
+    case 'auth_error':
+    case 'permission_error':
+    case 'error':
+      return 'danger';
+    default:
+      return 'neutral';
+  }
+}
+
+/** Short word for the "Locations" tile. */
+function locationsCount(summary: DashboardSummary | null): string {
+  switch (summary?.connection.status) {
+    case 'available':
+      return 'Connected';
+    case 'pending':
+      return 'Pending';
+    case 'rate_limited':
+      return 'Rate limited';
+    case 'auth_error':
+    case 'permission_error':
+    case 'error':
+      return 'Needs attention';
+    default:
+      return summary?.access.services.length ? 'Not verified' : 'Not linked';
+  }
 }
 
 /**
- * Next firing of a daily UTC cron, derived from the schedule in vercel.json.
- * This is read off real configuration, not invented.
+ * Next firing of the daily UTC crons, taken from the schedules in vercel.json
+ * (sync 02:30, publish-posts 03:30). Read off real configuration, not invented.
  */
-function nextDailyUtc(hour: number, minute: number): string {
+const CRON_SCHEDULE_UTC: [number, number][] = [
+  [2, 30],
+  [3, 30],
+];
+
+function nextDailyRunUtc(): string {
   const now = new Date();
-  const next = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute),
-  );
-  if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString();
+  const candidates = CRON_SCHEDULE_UTC.map(([hour, minute]) => {
+    const next = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute),
+    );
+    if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+    return next.getTime();
+  });
+  return new Date(Math.min(...candidates)).toISOString();
 }
 
 export default function DashboardOverview() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [config, setConfig] = useState<SettingsPayload['config'] | null>(null);
+  const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [posts, setPosts] = useState<GbpPost[] | null>(null);
-  const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
+  const [performance, setPerformance] = useState<PerformancePayload | null>(null);
   const [perfLoading, setPerfLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [synced, setSynced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Performance is a separate Google call, so it never blocks the rest of the
+   * page. It returns whether the snapshot was live, because a live answer is
+   * proof that access works — see `load`.
+   */
+  const loadPerformance = useCallback(async (): Promise<'google' | 'cache' | null> => {
+    try {
+      const response = await api.get<PerformancePayload>('/api/performance?days=30');
+      setPerformance(response.data ?? null);
+      return response.data?.source ?? null;
+    } catch {
+      setPerformance(null);
+      return null;
+    } finally {
+      setPerfLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     try {
-      const [status, settings, postList] = await Promise.all([
+      // Status and performance run together; settings are read AFTER both, so
+      // the setup checklist sees the access state those two calls just updated.
+      const [status, postList, perfSource] = await Promise.all([
         api.get<DashboardSummary>('/api/status'),
-        api.get<SettingsPayload>('/api/settings'),
         api.get<{ posts: GbpPost[] }>('/api/posts'),
+        loadPerformance(),
       ]);
-      setSummary(status.data);
-      // The checklist needs API access state alongside the config booleans.
-      setConfig(
-        settings.data
-          ? { ...settings.data.config, gbpAccess: settings.data.gbpAccess?.status }
-          : null,
-      );
+
+      // A live performance answer proves Google is working. If the status
+      // snapshot was taken a moment before it landed, take it again so the two
+      // can never disagree on screen.
+      let summaryData = status.data;
+      if (perfSource === 'google' && summaryData && summaryData.connection.status !== 'available') {
+        summaryData = (await api.get<DashboardSummary>('/api/status')).data;
+      }
+
+      const settings = await api.get<SettingsPayload>('/api/settings');
+      setSummary(summaryData);
+      setSettings(settings.data);
       setPosts(postList.data?.posts ?? []);
       setError(null);
     } catch (caught) {
@@ -128,35 +197,32 @@ export default function DashboardOverview() {
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  // Performance is a separate Google call, so it loads on its own and never
-  // blocks the rest of the page.
-  const loadPerformance = useCallback(async () => {
-    try {
-      const response = await api.get<PerformancePayload>('/api/performance?days=30');
-      setPerformance(response.data?.snapshot ?? null);
-    } catch {
-      setPerformance(null);
-    } finally {
-      setPerfLoading(false);
-    }
-  }, []);
+  }, [loadPerformance]);
 
   useEffect(() => {
     void load();
-    void loadPerformance();
-  }, [load, loadPerformance]);
+  }, [load]);
 
   async function syncNow() {
     setSyncing(true);
     setSynced(false);
     setPerfLoading(true);
-    await Promise.all([load(), loadPerformance()]);
+    await load();
     setSyncing(false);
     setSynced(true);
     window.setTimeout(() => setSynced(false), 2600);
   }
+
+  /** What the checklist and cards read — one status, from the freshest snapshot. */
+  const config: SettingsPayload['config'] | null = settings
+    ? {
+        ...settings.config,
+        gbpAccess: summary?.access.status ?? settings.gbpAccess.status,
+        storeReachable: settings.runtime.storeReachable,
+        lastCronRunAt: settings.runtime.lastCronRunAt,
+        cronFailed: settings.runtime.cronFailed,
+      }
+    : null;
 
   const connected = summary?.connection.connected ?? false;
   const tone = connectionTone(summary);
@@ -165,20 +231,39 @@ export default function DashboardOverview() {
     .sort((a, b) => (a.scheduledFor ?? '').localeCompare(b.scheduledFor ?? ''))
     .slice(0, 3);
 
-  const metric = (name: string) => performance?.series.find((s) => s.metric === name)?.total ?? null;
+  const perfSeries = performance?.snapshot.series ?? [];
+  const metric = (name: string) => perfSeries.find((s) => s.metric === name)?.total ?? null;
   const views = performance
-    ? performance.series
+    ? perfSeries
         .filter((s) => s.metric.startsWith('BUSINESS_IMPRESSIONS'))
         .reduce((sum, s) => sum + s.total, 0)
     : null;
 
-  const runs = summary?.automation.lastRuns ?? [];
-  const lastRun: AutomationRun | undefined = runs[0];
-  const runFor = (task: AutomationRun['task']) => runs.find((r) => r.task === task);
+  // The most recent run of each task, so one job's result never hides another's.
+  const latest = summary?.automation.latestByTask ?? [];
+  const lastRun: AutomationRun | undefined = latest[0];
+  const runFor = (task: AutomationRun['task']) => latest.find((r) => r.task === task);
   const cronReady = config?.cronConfigured ?? false;
+  const anyFailed = latest.some((r) => !r.ok);
 
-  const automationTone: Tone = !cronReady ? 'neutral' : runs.length === 0 ? 'warning' : 'success';
-  const automationLabel = !cronReady ? 'Not configured' : runs.length === 0 ? 'Waiting' : 'Ready';
+  const automationTone: Tone = !cronReady
+    ? 'neutral'
+    : anyFailed
+      ? 'danger'
+      : latest.length === 0
+        ? 'warning'
+        : 'success';
+  const automationLabel = !cronReady
+    ? 'Not configured'
+    : anyFailed
+      ? 'Needs attention'
+      : latest.length === 0
+        ? 'Waiting'
+        : 'Ready';
+
+  const status = summary?.connection.status;
+  const linked = summary?.connection.linked ?? false;
+  const reviewsFromCache = summary?.reviewsSource === 'cache';
 
   return (
     <div className="space-y-4 sm:space-y-5">
@@ -276,15 +361,19 @@ export default function DashboardOverview() {
                       Business
                     </dt>
                     <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
-                      JK Interior
+                      {settings?.config.business.name ?? 'JK Interior'}
                     </dd>
                   </div>
                   <div className="min-w-0">
                     <dt className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
                       Location
                     </dt>
-                    <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
-                      {summary.connection.detail}
+                    <dd
+                      className="truncate text-[0.8125rem] font-medium text-ink-900"
+                      title={summary.connection.locationPath}
+                    >
+                      {summary.connection.locationTitle ??
+                        (summary.connection.locationPath ? 'Selected location' : 'Detecting…')}
                     </dd>
                   </div>
                   <div className="min-w-0">
@@ -292,17 +381,24 @@ export default function DashboardOverview() {
                       Last synced
                     </dt>
                     <dd className="truncate text-[0.8125rem] font-medium text-ink-900">
-                      {lastRun ? relativeTime(lastRun.startedAt) : 'Not yet'}
+                      {summary.connection.lastSuccessAt
+                        ? relativeTime(summary.connection.lastSuccessAt)
+                        : 'Not yet'}
                     </dd>
                   </div>
                 </dl>
               ) : (
                 <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-600">
-                  {summary.connection.label === 'Approval pending'
-                    ? 'Your credentials are stored and valid. Google has not yet approved API access for this project — nothing else to do.'
-                    : 'Connect your Google Business Profile to unlock reviews, posts and performance data.'}
+                  {summary.connection.detail}
                 </p>
               )}
+
+              {connected && summary.access.degraded.length > 0 ? (
+                <p className="mt-2 text-xs leading-relaxed text-warning-700">
+                  Some Google data is not available yet:{' '}
+                  {summary.access.degraded.map((d) => GBP_SERVICE_LABEL[d.service]).join(', ')}.
+                </p>
+              ) : null}
 
               <div className="mt-3">
                 <ButtonLink
@@ -311,7 +407,13 @@ export default function DashboardOverview() {
                   size="sm"
                   iconRight={<ArrowRightIcon size={15} />}
                 >
-                  {connected ? 'Manage connection' : 'Connect Google'}
+                  {connected
+                    ? 'Manage connection'
+                    : !summary.connection.linked
+                      ? 'Connect Google'
+                      : status === 'auth_error'
+                        ? 'Reconnect Google'
+                        : 'View connection'}
                 </ButtonLink>
               </div>
             </div>
@@ -323,7 +425,15 @@ export default function DashboardOverview() {
       <section>
         <SectionHeader
           title="Your profile at a glance"
-          description={connected ? 'Live from Google Business Profile' : 'Available once connected'}
+          description={
+            summary?.reviewsSource === 'google' || summary?.reviewsSource === 'mock'
+              ? summary.reviewsSource === 'mock'
+                ? 'Simulated data — mock mode'
+                : 'Live from Google Business Profile'
+              : reviewsFromCache
+                ? `Last synced ${relativeTime(summary?.reviewsFetchedAt)} — Google could not be reached just now`
+                : 'Available once connected'
+          }
         />
         {loading ? (
           <SkeletonMetrics />
@@ -339,7 +449,7 @@ export default function DashboardOverview() {
               value={summary?.totalReviews ?? 0}
               icon={<StarIcon size={15} />}
               tone="warning"
-              hint={connected ? 'All time' : 'Once connected'}
+              hint={summary && summary.reviewsSource !== 'none' ? 'All time' : 'Once connected'}
             />
             <MetricCard
               label="Average rating"
@@ -353,7 +463,7 @@ export default function DashboardOverview() {
               value={summary?.newReviews ?? 0}
               icon={<ChatIcon size={15} />}
               tone="brand"
-              hint={connected ? 'Last 7 days' : 'Once connected'}
+              hint={summary && summary.reviewsSource !== 'none' ? 'Last 7 days' : 'Once connected'}
             />
             <MetricCard
               label="Posts published"
@@ -467,7 +577,7 @@ export default function DashboardOverview() {
             tone="teal"
             title="Locations"
             description="The profile and location this dashboard manages."
-            count={connected ? 'Connected' : 'Not linked'}
+            count={locationsCount(summary)}
           />
           <FeatureCard
             href="/dashboard/settings"
@@ -513,16 +623,24 @@ export default function DashboardOverview() {
               icon={<StarIcon size={18} />}
               tone="warning"
               compact
-              title={connected ? 'No reviews yet' : 'Your latest reviews will appear here'}
+              title={
+                connected
+                  ? 'No reviews yet'
+                  : linked
+                    ? 'Reviews will appear once Google is ready'
+                    : 'Your latest reviews will appear here'
+              }
               description={
                 connected
                   ? 'New Google reviews land here automatically after each sync.'
-                  : 'Connect Google to automatically bring your latest reviews here.'
+                  : linked
+                    ? 'Your Google account is linked. Reviews load by themselves as soon as Google lets this app read them.'
+                    : 'Connect Google to automatically bring your latest reviews here.'
               }
               action={
                 connected ? null : (
                   <ButtonLink href="/dashboard/connection" size="sm">
-                    Connect Google
+                    {linked ? 'View connection' : 'Connect Google'}
                   </ButtonLink>
                 )
               }
@@ -592,14 +710,27 @@ export default function DashboardOverview() {
       <section>
         <SectionHeader
           title="Performance overview"
-          description="How customers found and contacted you in the last 30 days"
+          description={
+            performance
+              ? performance.source === 'google'
+                ? `Live from Google — ${formatDate(performance.snapshot.rangeStart)} to ${formatDate(performance.snapshot.rangeEnd)}`
+                : `Last synced ${relativeTime(performance.fetchedAt)} — not live`
+              : 'How customers found and contacted you in the last 30 days'
+          }
           action={
-            <SectionLink href="/dashboard/performance">Full report</SectionLink>
+            <span className="flex items-center gap-2">
+              {performance ? (
+                <Badge tone={performance.source === 'google' ? 'success' : 'warning'} dot>
+                  {performance.source === 'google' ? 'Live' : 'Cached'}
+                </Badge>
+              ) : null}
+              <SectionLink href="/dashboard/performance">Full report</SectionLink>
+            </span>
           }
         />
         {perfLoading ? (
           <SkeletonMetrics />
-        ) : performance && performance.series.length > 0 ? (
+        ) : performance && performance.snapshot.series.length > 0 ? (
           <KpiGrid>
             <MetricCard
               label="Profile views"
@@ -631,21 +762,32 @@ export default function DashboardOverview() {
             icon={<ChartIcon size={18} />}
             tone="success"
             compact
-            title={connected ? 'No performance data yet' : 'Connect Google to see your real performance'}
+            title={
+              connected
+                ? 'No performance data yet'
+                : linked
+                  ? 'Performance will appear once Google is ready'
+                  : 'Connect Google to see your real performance'
+            }
             description={
               connected
                 ? 'Google reports with about a two-day delay, and a newer profile needs some traffic first.'
-                : 'Views, calls, website clicks and direction requests come straight from Google.'
+                : linked
+                  ? 'Your Google account is linked. Views, calls and clicks appear here as soon as Google opens access.'
+                  : 'Views, calls, website clicks and direction requests come straight from Google.'
             }
             action={
               connected ? null : (
                 <ButtonLink href="/dashboard/connection" size="sm">
-                  Connect Google
+                  {linked ? 'View connection' : 'Connect Google'}
                 </ButtonLink>
               )
             }
           />
         )}
+        {performance?.source === 'cache' && performance.cacheReason ? (
+          <p className="mt-2 text-xs leading-relaxed text-warning-700">{performance.cacheReason}</p>
+        ) : null}
       </section>
 
       {/* --------------------------- AI router ---------------------------- */}
@@ -767,7 +909,7 @@ export default function DashboardOverview() {
                   <CalendarIcon size={13} /> Next run
                 </dt>
                 <dd className="mt-1 truncate text-[0.875rem] font-medium text-ink-900">
-                  {cronReady ? scheduleLabel(nextDailyUtc(2, 30)) : 'Not scheduled'}
+                  {cronReady ? scheduleLabel(nextDailyRunUtc()) : 'Not scheduled'}
                 </dd>
               </div>
             </dl>
@@ -781,9 +923,12 @@ export default function DashboardOverview() {
                 ] as const
               ).map(([task, label, glyph]) => {
                 const run = runFor(task);
+                // A job that skipped itself (Google not ready yet) did not fail,
+                // but it did not do its work either — say so, don't call it healthy.
+                const skipped = run?.ok && run.details?.status === 'skipped';
                 const runTone: Tone = !cronReady
                   ? 'neutral'
-                  : !run
+                  : !run || skipped
                     ? 'warning'
                     : run.ok
                       ? 'success'
@@ -792,9 +937,11 @@ export default function DashboardOverview() {
                   ? 'Not configured'
                   : !run
                     ? 'Waiting'
-                    : run.ok
-                      ? 'Healthy'
-                      : 'Failed';
+                    : skipped
+                      ? 'Skipped'
+                      : run.ok
+                        ? 'Healthy'
+                        : 'Failed';
                 return (
                   <li key={task} className="flex items-center gap-3 px-4 py-3">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-subtle text-ink-500">

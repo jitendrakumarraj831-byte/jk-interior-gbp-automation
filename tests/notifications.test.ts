@@ -106,3 +106,19 @@ describe('read state', () => {
     expect(await unreadCount()).toBe(0);
   });
 });
+
+describe('concurrent notify', () => {
+  it('ten overlapping callers with the same dedupe key create exactly one notification', async () => {
+    vi.resetModules();
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const { notify, listNotifications } = await import('@/lib/notifications');
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        notify({ category: 'new_review', title: 'T', message: 'M', dedupeKey: 'race:1' }),
+      ),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await listNotifications()).toHaveLength(1);
+  });
+});

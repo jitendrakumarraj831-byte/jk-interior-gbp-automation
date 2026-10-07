@@ -264,7 +264,7 @@ export default function DraftsClient() {
                 </div>
 
                 {draft.reviewComment ? (
-                  <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-ink-700">
+                  <p className="wrap-any mt-3 whitespace-pre-line text-sm leading-relaxed text-ink-700">
                     {draft.reviewComment}
                   </p>
                 ) : (
@@ -307,9 +307,20 @@ export default function DraftsClient() {
                   </>
                 ) : (
                   <div className="rounded-xl border border-ai-100 bg-surface px-3.5 py-3">
-                    <p className="whitespace-pre-line text-sm leading-relaxed text-ink-800">{value}</p>
+                    <p className="wrap-any whitespace-pre-line text-sm leading-relaxed text-ink-800">{value}</p>
                   </div>
                 )}
+
+                {draft.flags && draft.flags.length > 0 && !locked ? (
+                  <div className="mt-3 rounded-xl bg-warning-50 px-3 py-2.5 text-[0.8125rem] leading-relaxed text-warning-700">
+                    <p className="font-semibold">Check before approving</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {draft.flags.map((flag) => (
+                        <li key={flag}>{flag}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
 
                 {draft.error ? (
                   <p className="mt-3 rounded-xl bg-danger-50 px-3 py-2.5 text-sm text-danger-700">
@@ -319,7 +330,7 @@ export default function DraftsClient() {
 
                 {!locked ? (
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    {draft.status === 'approved' ? (
+                    {draft.status === 'approved' && !dirty ? (
                       <Button
                         size="sm"
                         onClick={() => void act(draft, 'publish')}
@@ -331,7 +342,7 @@ export default function DraftsClient() {
                     ) : (
                       <Button
                         size="sm"
-                        onClick={() => void act(draft, dirty ? 'save' : 'approve')}
+                        onClick={() => void act(draft, 'approve')}
                         loading={isBusy}
                         icon={isBusy ? undefined : <CheckIcon size={15} />}
                       >
@@ -349,7 +360,7 @@ export default function DraftsClient() {
                       {isEditing ? 'Done editing' : 'Edit'}
                     </Button>
 
-                    {draft.status === 'approved' ? (
+                    {draft.status === 'approved' && !dirty ? (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -375,7 +386,9 @@ export default function DraftsClient() {
 
                 {draft.status === 'approved' ? (
                   <p className="mt-2.5 text-xs text-ink-500">
-                    Approved, but still private. Press Publish to send it to Google.
+                    {dirty
+                      ? 'You changed the wording. Save & approve it again before publishing — only the approved text is ever sent.'
+                      : 'Approved, but still private. Press Publish to send it to Google.'}
                   </p>
                 ) : null}
               </div>

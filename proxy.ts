@@ -1,5 +1,5 @@
 /**
- * Edge gate for the dashboard.
+ * Request gate for the dashboard (Next.js 16 "proxy", formerly "middleware").
  *
  * Three jobs, in order:
  *
@@ -10,11 +10,11 @@
  *     flash of dashboard chrome.
  *  3. Issue the double-submit CSRF cookie when the browser does not have one.
  *
- * Middleware runs on the Edge runtime, where the Node crypto that signs the
- * session cookie is unavailable — so it checks only that a cookie is *present*.
- * Signature and expiry are verified server-side in app/dashboard/layout.tsx and
- * again in every API route via assertAdmin(). This layer is defence in depth
- * and UX, never the sole gate.
+ * The proxy deliberately checks only that a session cookie is *present*: it is
+ * a fast redirect for visitors who are clearly signed out. Signature and expiry
+ * are verified server-side in app/dashboard/layout.tsx and again in every API
+ * route via assertAdmin(). This layer is defence in depth and UX, never the
+ * sole gate.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -43,7 +43,7 @@ function withCsrfCookie(request: NextRequest, response: NextResponse): NextRespo
   return response;
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const configured = adminAuthConfigured();
 
   // 1. Production without credentials: refuse, do not degrade to open access.

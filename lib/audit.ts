@@ -19,6 +19,9 @@ import type { AuditAction, AuditLogEntry, AuditStatus } from './types';
 
 const PREFIX = nsKey('audit', '');
 
+/** Entries expire on their own, so the log (and every read of it) stays bounded. */
+const AUDIT_RETENTION_SECONDS = 180 * 24 * 60 * 60;
+
 function key(id: string): string {
   return `${PREFIX}${id}`;
 }
@@ -61,7 +64,7 @@ export async function recordAudit(input: {
       timestamp: new Date().toISOString(),
       ...input,
     };
-    await getStore().set(key(entry.id), entry);
+    await getStore().set(key(entry.id), entry, { ttlSeconds: AUDIT_RETENTION_SECONDS });
   } catch {
     // Audit logging is best-effort — it must never fail the action it is
     // recording.

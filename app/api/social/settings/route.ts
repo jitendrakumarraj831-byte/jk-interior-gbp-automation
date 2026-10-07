@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { configSummary } from '@/lib/config';
-import { getRefreshToken } from '@/lib/google-auth';
+import { getCredentialState } from '@/lib/google-auth';
 import { getConnectionState } from '@/lib/meta/auth';
 import { assertAdmin, handleRoute, ok, parseJson } from '@/lib/security';
 import { getSocialSettings, saveSocialSettings } from '@/lib/social/settings';
@@ -51,11 +51,11 @@ const patchSchema = z.object({
 export async function GET(request: Request) {
   return handleRoute('social/settings', async () => {
     assertAdmin(request);
-    const refreshToken = await getRefreshToken().catch(() => null);
+    const credential = await getCredentialState();
     return ok({
       settings: await getSocialSettings(),
       connection: await getConnectionState(),
-      config: configSummary(refreshToken).meta,
+      config: configSummary(credential.connected).meta,
     });
   });
 }

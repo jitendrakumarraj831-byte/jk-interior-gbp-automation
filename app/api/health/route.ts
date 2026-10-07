@@ -1,35 +1,52 @@
 /**
  * Health / readiness probe.
  *
- * The one deliberately public endpoint. It returns booleans and a mode string
- * only — never a secret, a credential fragment, a resource name or a hostname.
- * Safe to point an uptime monitor at.
+ * The one deliberately public endpoint. It returns booleans and short status
+ * words only — never a secret, a credential fragment, a resource name, an email
+ * or a hostname. Safe to point an uptime monitor at.
+ *
+ * It makes NO Google call: Business Profile status is read from the shared
+ * access snapshot that every real Google call keeps current, so probing this
+ * endpoint costs no quota and can never disagree with the dashboard.
  */
 
 import { NextResponse } from 'next/server';
 
 import { BUSINESS, configSummary } from '@/lib/config';
-import { getRefreshToken } from '@/lib/google-auth';
-import { getStore } from '@/lib/store';
+import { readAccess } from '@/lib/gbp-access';
+import { getCredentialState } from '@/lib/google-auth';
+import { getStore, pingStore } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET() {
-  // A missing/unreachable store must not make the app look unhealthy.
-  let refreshToken: string | null = null;
-  let storeReachable = true;
-  try {
-    refreshToken = await getRefreshToken();
-  } catch {
-    storeReachable = false;
-  }
+  const [credential, access, reachable] = await Promise.all([
+    getCredentialState(),
+    readAccess(),
+    pingStore(),
+  ]);
 
-  const summary = configSummary(refreshToken);
+  const summary = configSummary(credential.connected);
+
+  const degradedReasons: string[] = [];
+  if (summary.adminAuthMode === 'misconfigured') {
+    degradedReasons.push(
+      'Admin authentication is not configured in production; admin routes are refusing requests.',
+    );
+  }
+  if (!reachable) degradedReasons.push('The data store is not responding.');
+  if (credential.connected && access.status === 'auth_error') {
+    degradedReasons.push('Google rejected the saved sign-in; the account must be reconnected.');
+  }
+  if (credential.connected && access.status === 'permission_error') {
+    degradedReasons.push('Google Business Profile access needs attention.');
+  }
 
   return NextResponse.json(
     {
-      status: 'ok',
+      status: degradedReasons.length > 0 ? 'degraded' : 'ok',
+      ...(degradedReasons.length > 0 ? { degradedReasons } : {}),
       service: 'JK Interior GBP Automation',
       business: BUSINESS.name,
       website: BUSINESS.website,
@@ -39,7 +56,8 @@ export async function GET() {
       googleConfigured: summary.googleConfigured,
       checks: {
         oauthConfigured: summary.oauthConfigured,
-        googleConnected: summary.googleConfigured,
+        // A credential is held and Google has not rejected it.
+        googleConnected: credential.connected && access.status !== 'auth_error',
         aiConfigured: summary.aiConfigured,
         cronConfigured: summary.cronConfigured,
         adminAuthConfigured: summary.adminAuthConfigured,
@@ -47,21 +65,14 @@ export async function GET() {
         adminAuthMode: summary.adminAuthMode,
         durableStore: summary.durableStore,
         storeKind: getStore().kind,
-        storeReachable,
+        storeReachable: reachable,
         autoPublishReplies: summary.autoPublishReplies,
       },
-      gbpApiAccess: summary.googleConfigured
-        ? 'configured'
-        : 'awaiting_credentials_or_api_approval',
-      // Surfaced so a monitor can alarm on a deployment that is refusing to
-      // serve its dashboard because admin credentials were never set.
-      ...(summary.adminAuthMode === 'misconfigured'
-        ? {
-            status: 'degraded',
-            degradedReason:
-              'Admin authentication is not configured in production; admin routes are refusing requests.',
-          }
-        : {}),
+      // What Google actually last said — not whether credentials merely exist.
+      // 'unknown' | 'available' | 'pending' | 'rate_limited' | 'auth_error' |
+      // 'permission_error' | 'error'
+      gbpApiAccess: credential.connected ? access.status : 'not_connected',
+      gbpServices: Object.fromEntries(access.services.map((s) => [s.service, s.status])),
     },
     { headers: { 'Cache-Control': 'no-store' } },
   );

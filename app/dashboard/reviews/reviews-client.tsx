@@ -44,8 +44,9 @@ type Payload = {
   reviews: Review[];
   averageRating: number | null;
   totalReviewCount: number;
-  source: 'google' | 'cache';
+  source: 'google' | 'cache' | 'mock';
   fetchedAt: string;
+  cacheReason?: string;
 };
 
 type Filter = 'all' | 'needs_reply' | 'low';
@@ -69,7 +70,11 @@ export default function ReviewsClient() {
     try {
       const response = await api.get<Payload>('/api/reviews');
       setPayload(response.data);
-      setCacheMessage(response.data?.source === 'cache' ? response.message : null);
+      setCacheMessage(
+        response.data?.source === 'cache'
+          ? (response.data.cacheReason ?? 'Google could not be reached for fresh reviews.')
+          : null,
+      );
       setNotice(null);
     } catch (caught) {
       const error = caught instanceof ApiError ? caught : null;
@@ -150,8 +155,12 @@ export default function ReviewsClient() {
 
       {cacheMessage ? (
         <div className="mb-5">
-          <Callout tone="warning" title="Showing the last synced copy" icon={<InfoIcon size={18} />}>
+          <Callout tone="warning" title="Not live — showing the last synced copy" icon={<InfoIcon size={18} />}>
             <p>{cacheMessage}</p>
+            <p className="mt-1 text-ink-500">
+              Last synced {payload ? relativeTime(payload.fetchedAt) : 'earlier'}. Replies you publish
+              are sent to Google as normal.
+            </p>
           </Callout>
         </div>
       ) : null}
@@ -243,7 +252,13 @@ export default function ReviewsClient() {
       {payload ? (
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <Segmented options={FILTERS} value={filter} onChange={setFilter} label="Filter reviews" />
-          <p className="text-xs text-ink-400">Updated {relativeTime(payload.fetchedAt)}</p>
+          <p className="text-xs text-ink-400">
+            {payload.source === 'cache'
+              ? `Cached ${relativeTime(payload.fetchedAt)}`
+              : payload.source === 'mock'
+                ? 'Simulated (mock mode)'
+                : `Live · updated ${relativeTime(payload.fetchedAt)}`}
+          </p>
         </div>
       ) : null}
 

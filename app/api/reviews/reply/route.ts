@@ -12,9 +12,12 @@
 
 import { z } from 'zod';
 
-import { MAX_REPLY_CHARS } from '@/lib/ai-reply';
+import { editedReplyFlags, MAX_REPLY_CHARS } from '@/lib/ai-reply';
 import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { AppError } from '@/lib/errors';
+import { isMockResourceName } from '@/lib/gbp-mock';
+import { isMockModeActive } from '@/lib/config';
+import { isReviewResourceName } from '@/lib/google-business';
 import {
   deleteDraft,
   findDraftByReviewId,
@@ -39,7 +42,17 @@ const starSchema = z.union([
 
 const generateSchema = z.object({
   reviewId: z.string().trim().min(1).max(200),
-  reviewName: z.string().trim().min(1).max(400),
+  // The name is later placed in a Google URL, so only a genuine review resource
+  // name is accepted (or a simulated one while mock mode is on).
+  reviewName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(400)
+    .refine(
+      (name) => isReviewResourceName(name) || (isMockModeActive() && isMockResourceName(name)),
+      'Not a valid review resource name',
+    ),
   reviewerName: z.string().trim().min(1).max(200),
   starRating: starSchema,
   comment: z.string().max(5000).default(''),
@@ -86,7 +99,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const draft = await createDraftForReview({
+    const existingReplies = new Set(
+      (await listDrafts())
+        .filter((d) => d.reviewId !== body.reviewId)
+        .map((d) => d.text.replace(/\s+/g, ' ').trim().toLowerCase()),
+    );
+
+    const draft = await createDraftForReview(
+      {
       name: body.reviewName,
       reviewId: body.reviewId,
       reviewerName: body.reviewerName,
@@ -96,7 +116,9 @@ export async function POST(request: Request) {
       updateTime: new Date().toISOString(),
       existingReply: null,
       replyStatus: 'no_reply',
-    });
+      },
+      existingReplies,
+    );
 
     // Reuse the existing id so regeneration replaces rather than duplicates.
     const saved = await saveDraft(existing ? { ...draft, id: existing.id } : draft);
@@ -124,18 +146,38 @@ export async function PATCH(request: Request) {
     }
 
     const text = body.text ? sanitizeText(body.text, MAX_REPLY_CHARS) : draft.text;
+    const textChanged = text !== draft.text;
+
+    /*
+     * Approval belongs to specific wording. If the text of an approved draft is
+     * changed, the approval no longer describes what would be published, so it
+     * is withdrawn and the draft must be approved again — unless this same
+     * request approves it, which is the "Save & approve" button.
+     */
+    const approvalVoided = draft.status === 'approved' && textChanged && body.action !== 'approve';
     const status =
       body.action === 'approve'
         ? ('approved' as const)
-        : body.action === 'unapprove'
+        : body.action === 'unapprove' || approvalVoided
           ? ('draft_pending' as const)
           : draft.status;
+
+    // Flags describe the wording, so they are recomputed when the wording changes.
+    const flags = textChanged
+      ? editedReplyFlags(text, { starRating: draft.starRating, comment: draft.reviewComment })
+      : draft.flags;
 
     const saved = await saveDraft({
       ...draft,
       text,
+      flags: flags && flags.length > 0 ? flags : undefined,
       status,
-      approvedAt: status === 'approved' ? new Date().toISOString() : undefined,
+      approvedAt:
+        status === 'approved'
+          ? draft.status === 'approved' && body.action !== 'approve'
+            ? draft.approvedAt
+            : new Date().toISOString()
+          : undefined,
       error: undefined,
     });
 
@@ -153,7 +195,9 @@ export async function PATCH(request: Request) {
       { draft: saved },
       status === 'approved'
         ? 'Draft approved. It is not on Google yet — press Publish to send it.'
-        : 'Draft saved.',
+        : approvalVoided
+          ? 'Draft saved. You changed the wording, so it needs to be approved again before it can be published.'
+          : 'Draft saved.',
     );
   });
 }

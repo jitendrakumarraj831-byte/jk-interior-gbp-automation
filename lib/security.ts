@@ -95,8 +95,20 @@ function sessionSecret(): string {
   return env().SESSION_SECRET;
 }
 
+/**
+ * Signing key for session tokens and OAuth state. It is derived from BOTH
+ * SESSION_SECRET and ADMIN_PASSWORD, so rotating either one immediately
+ * invalidates every outstanding session. Sessions are stateless, so this is the
+ * revocation lever: change the password and every stolen or forgotten cookie
+ * stops working at once.
+ */
+function signingKey(): Buffer {
+  const { SESSION_SECRET, ADMIN_PASSWORD } = env();
+  return createHmac('sha256', SESSION_SECRET).update(`admin-session:${ADMIN_PASSWORD}`).digest();
+}
+
 function sign(payload: string): string {
-  return createHmac('sha256', sessionSecret()).update(payload).digest('hex');
+  return createHmac('sha256', signingKey()).update(payload).digest('hex');
 }
 
 /** Creates a signed, expiring session token. Contains no secret material. */
@@ -230,8 +242,6 @@ export function assertCsrfToken(request: Request): void {
 const LOGIN_MAX_ATTEMPTS = 8;
 const LOGIN_WINDOW_SECONDS = 15 * 60;
 
-type LoginAttempts = { count: number; firstAt: number };
-
 /**
  * Stable, non-reversible key for a client. The raw IP is never stored — it is
  * HMACed first, so the rate-limit records hold no personal data.
@@ -243,46 +253,38 @@ function clientKey(request: Request): string {
     .update(ip)
     .digest('hex')
     .slice(0, 32);
-  return nsKey('login_attempts', digest);
+  // v2: earlier versions stored a JSON object under 'login_attempts'; Redis INCR
+  // cannot increment that, so the counter lives under a fresh key.
+  return nsKey('login_attempts_v2', digest);
 }
 
-/** Throws 429 when this client has failed too many times recently. */
+/**
+ * Counts this sign-in attempt and throws 429 once the client has exceeded the
+ * limit within the window.
+ *
+ * The increment is ATOMIC and happens BEFORE the password is checked. A
+ * read-check-then-count design lets a burst of parallel guesses all pass the
+ * check before any of them is counted; counting first means attempt number N+1
+ * is refused however the requests interleave. A correct password clears the
+ * counter (see clearLoginFailures), so only failures accumulate. The window
+ * starts on the first attempt and expires on its own.
+ */
 export async function assertLoginAllowed(request: Request): Promise<void> {
-  let record: LoginAttempts | null = null;
+  let attempts: number;
   try {
-    record = await getStore().get<LoginAttempts>(clientKey(request));
+    attempts = await getStore().incr(clientKey(request), { ttlSeconds: LOGIN_WINDOW_SECONDS });
   } catch {
     // A store outage must never lock the operator out of their own dashboard.
     return;
   }
-  if (!record) return;
+  if (attempts <= LOGIN_MAX_ATTEMPTS) return;
 
-  const ageSeconds = (Date.now() - record.firstAt) / 1000;
-  if (ageSeconds > LOGIN_WINDOW_SECONDS) return;
-  if (record.count < LOGIN_MAX_ATTEMPTS) return;
-
-  const retryAfter = Math.ceil(LOGIN_WINDOW_SECONDS - ageSeconds);
-  log.warn('security', 'Blocked a sign-in attempt from a rate-limited client.', { retryAfter });
+  log.warn('security', 'Blocked a sign-in attempt from a rate-limited client.');
   throw new AppError(
     'RATE_LIMITED',
-    `Too many failed sign-in attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).`,
+    `Too many failed sign-in attempts. Try again in ${Math.ceil(LOGIN_WINDOW_SECONDS / 60)} minutes.`,
     429,
   );
-}
-
-export async function recordLoginFailure(request: Request): Promise<void> {
-  try {
-    const key = clientKey(request);
-    const store = getStore();
-    const record = await store.get<LoginAttempts>(key);
-    const expired = !record || (Date.now() - record.firstAt) / 1000 > LOGIN_WINDOW_SECONDS;
-    await store.set<LoginAttempts>(
-      key,
-      expired ? { count: 1, firstAt: Date.now() } : { count: record.count + 1, firstAt: record.firstAt },
-    );
-  } catch {
-    /* best effort — never fail the request because the counter could not be written */
-  }
 }
 
 export async function clearLoginFailures(request: Request): Promise<void> {
@@ -345,6 +347,26 @@ export function assertAdmin(request: Request): void {
   }
 }
 
+
+/**
+ * Session-only variant of assertAdmin for browser navigations that cannot carry
+ * a CSRF header — the Google OAuth callback is a top-level GET that Google
+ * redirects to. The OAuth `state` cookie already binds that request to the
+ * browser that started it; this additionally requires that browser to still be
+ * signed in as the admin, so a stale or foreign tab can never store a token.
+ */
+export function assertAdminSession(request: Request): void {
+  switch (adminAuthMode()) {
+    case 'misconfigured':
+      throw adminAuthMisconfiguredError();
+    case 'development_only':
+      return;
+    case 'enforced':
+      if (!hasValidSession(request)) {
+        throw new AppError('UNAUTHORIZED', 'Admin sign-in required.', 401);
+      }
+  }
+}
 
 export function readCookie(request: Request, name: string): string | undefined {
   const header = request.headers.get('cookie');

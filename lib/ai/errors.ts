@@ -13,6 +13,7 @@ export type AiErrorKind =
   | 'timeout' // D. exceeded the router's per-provider budget
   | 'temporary' // E. 5xx / network blip
   | 'invalid_request' // F. our payload is wrong — every provider would reject it
+  | 'model_unavailable' // H. this provider's model id is gone — another provider may be fine
   | 'unknown'; // G. anything unclassified
 
 export class ProviderError extends Error {
@@ -65,7 +66,15 @@ export function classify(error: unknown, status = statusOf(error)): AiErrorKind 
   if (status === 429) return 'rate_limit';
   if (status === 408 || status === 504) return 'timeout';
   if (status !== undefined && status >= 500) return 'temporary';
-  if (status === 400 || status === 404 || status === 422) return 'invalid_request';
+  // A retired or misspelt model id is specific to ONE provider (Groq answers
+  // 404 model_not_found, or 400 model_decommissioned). Falling through to the
+  // next provider is right; stopping the chain would take drafting down for a
+  // fault another provider does not share.
+  const code = (error as { code?: unknown } | null)?.code;
+  if (status === 404 || code === 'model_not_found' || code === 'model_decommissioned') {
+    return 'model_unavailable';
+  }
+  if (status === 400 || status === 422) return 'invalid_request';
   // No status at all is almost always a socket/DNS problem — worth another provider.
   if (status === undefined) return 'temporary';
   return 'unknown';

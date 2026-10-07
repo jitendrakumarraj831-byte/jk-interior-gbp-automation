@@ -24,8 +24,11 @@ export type ReviewsPayload = {
   reviews: Review[];
   averageRating: number | null;
   totalReviewCount: number;
-  source: 'google' | 'cache';
+  /** 'google' = fetched just now. 'cache' = the last good sync, shown because Google could not answer. */
+  source: 'google' | 'cache' | 'mock';
   fetchedAt: string;
+  /** Why live data was unavailable. Present only when source is 'cache'. */
+  cacheReason?: string;
 };
 
 export async function GET(request: Request) {
@@ -42,7 +45,7 @@ export async function GET(request: Request) {
         reviews: applyDraftStatus(mock.reviews, drafts),
         averageRating: mock.averageRating,
         totalReviewCount: mock.totalReviewCount,
-        source: 'google',
+        source: 'mock',
         fetchedAt: new Date().toISOString(),
       };
       return ok(payload, `Mock mode — showing ${mock.reviews.length} simulated reviews.`);
@@ -83,12 +86,13 @@ export async function GET(request: Request) {
           totalReviewCount: cached.totalReviewCount,
           source: 'cache',
           fetchedAt: cached.fetchedAt,
+          cacheReason: error.message,
         };
         return ok(
           payload,
           isApprovalPending(error.code)
             ? `Google Business Profile API approval pending — showing the last synced copy from ${cached.fetchedAt}.`
-            : `Live fetch failed (${error.message}) — showing the last synced copy.`,
+            : `Google could not be reached for fresh reviews (${error.message}) — showing the last synced copy.`,
         );
       }
       return failure(error);

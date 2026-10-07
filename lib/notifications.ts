@@ -18,6 +18,10 @@ import type { AppNotification, NotificationCategory } from './types';
 const PREFIX = nsKey('notification', '');
 const DEDUPE_PREFIX = nsKey('notification-dedupe', '');
 
+/** Notifications age out; the dedupe index outlives them so an old event never re-notifies. */
+const NOTIFICATION_RETENTION_SECONDS = 90 * 24 * 60 * 60;
+const DEDUPE_RETENTION_SECONDS = 400 * 24 * 60 * 60;
+
 function key(id: string): string {
   return `${PREFIX}${id}`;
 }
@@ -57,11 +61,16 @@ export async function notify(input: {
   try {
     const store = getStore();
     const indexKey = dedupeKeyOf(input.dedupeKey);
-    const existingId = await store.get<string>(indexKey);
-    if (existingId) return null;
+    const id = randomUUID();
+
+    // Claim the dedupe key ATOMICALLY. A get-then-set lets two overlapping
+    // callers (a dashboard sync racing a cron run) both see "not there yet"
+    // and both notify; only the one that wins this claim creates anything.
+    const won = await store.setIfAbsent(indexKey, id, { ttlSeconds: DEDUPE_RETENTION_SECONDS });
+    if (!won) return null;
 
     const notification: AppNotification = {
-      id: randomUUID(),
+      id,
       category: input.category,
       title: input.title,
       message: input.message,
@@ -70,8 +79,7 @@ export async function notify(input: {
       read: false,
       createdAt: new Date().toISOString(),
     };
-    await store.set(key(notification.id), notification);
-    await store.set(indexKey, notification.id);
+    await store.set(key(notification.id), notification, { ttlSeconds: NOTIFICATION_RETENTION_SECONDS });
     return notification;
   } catch {
     return null;
@@ -83,7 +91,11 @@ export async function markRead(id: string): Promise<void> {
     const store = getStore();
     const existing = await store.get<AppNotification>(key(id));
     if (!existing || existing.read) return;
-    await store.set(key(id), { ...existing, read: true, readAt: new Date().toISOString() });
+    await store.set(
+      key(id),
+      { ...existing, read: true, readAt: new Date().toISOString() },
+      { ttlSeconds: NOTIFICATION_RETENTION_SECONDS },
+    );
   } catch {
     /* best effort */
   }
