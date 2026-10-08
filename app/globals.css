@@ -245,6 +245,16 @@ select {
   scroll-snap-align: start;
 }
 
+/*
+ * Customer- and owner-written text (review comments, replies, post titles) can
+ * contain a long unbroken string such as a pasted link. Without this it widens
+ * its grid/flex column past the screen on a phone. `anywhere` also shrinks the
+ * min-content size, so the column itself stops growing.
+ */
+.wrap-any {
+  overflow-wrap: anywhere;
+}
+
 /* Clamp long review text without a layout jump. */
 .clamp-3 {
   display: -webkit-box;

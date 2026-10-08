@@ -19,8 +19,9 @@ import {
   isMetaConfigured,
   isOAuthConfigured,
 } from './config';
-import { describeAccess, readAccess, statusFromErrorCode } from './gbp-access';
-import { getRefreshToken } from './google-auth';
+import { readAccess } from './gbp-access';
+import { GBP_SERVICE_LABEL, statusFromErrorCode } from './gbp-status';
+import { getCredentialState } from './google-auth';
 import { getConnectionState } from './meta/auth';
 import { lastRunOf } from './repository';
 import type { AppErrorCode } from './errors';
@@ -41,16 +42,36 @@ async function oauthCheck(): Promise<HealthCheck> {
       'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET or GOOGLE_REDIRECT_URI is missing.',
     );
   }
-  const refreshToken = await getRefreshToken().catch(() => null);
-  if (!refreshToken) {
+  const credential = await getCredentialState();
+  if (!credential.connected) {
     return check(
       'google_oauth',
       'Google OAuth',
       'pending',
-      'OAuth client is configured but no Google account has connected yet.',
+      credential.environmentTokenIgnored
+        ? 'The account was disconnected. GOOGLE_REFRESH_TOKEN is still set but is ignored until you reconnect.'
+        : 'OAuth client is configured but no Google account has connected yet.',
     );
   }
-  return check('google_oauth', 'Google OAuth', 'healthy', 'A Google account is connected.');
+  // A saved sign-in that Google has since rejected is not "healthy", however
+  // recently it was connected.
+  const access = await readAccess();
+  if (access.status === 'auth_error') {
+    return check(
+      'google_oauth',
+      'Google OAuth',
+      'error',
+      'Google rejected the saved sign-in. Reconnect the Google account.',
+    );
+  }
+  return check(
+    'google_oauth',
+    'Google OAuth',
+    'healthy',
+    credential.source === 'environment'
+      ? 'A Google account is connected (credential from the environment).'
+      : 'A Google account is connected.',
+  );
 }
 
 async function gbpApiCheck(): Promise<HealthCheck> {
@@ -64,11 +85,17 @@ async function gbpApiCheck(): Promise<HealthCheck> {
     permission_error: 'error',
     error: 'error',
   };
+  // When access is proven but one API still fails, say which — the overall line
+  // stays healthy (Google IS answering) without hiding the partial problem.
+  const degraded =
+    record.degraded.length > 0
+      ? ` Not yet available: ${record.degraded.map((s) => GBP_SERVICE_LABEL[s.service]).join(', ')}.`
+      : '';
   return check(
     'gbp_api',
     'Business Profile API',
     statusMap[record.status] ?? 'error',
-    describeAccess(record.status),
+    `${record.message}${degraded}`,
   );
 }
 

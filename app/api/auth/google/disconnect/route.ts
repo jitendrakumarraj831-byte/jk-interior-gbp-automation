@@ -1,9 +1,15 @@
-/** Clears the stored Google connection. */
+/**
+ * Disconnects the Google account.
+ *
+ * Removes the stored refresh token, revokes it at Google and forgets the cached
+ * access state. If GOOGLE_REFRESH_TOKEN is set in the environment it is ignored
+ * from now on (until the account is reconnected), so Disconnect really does
+ * disconnect — see lib/google-auth.ts for the full rule.
+ */
 
 import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { disconnect } from '@/lib/google-auth';
 import { assertAdmin, handleRoute, ok } from '@/lib/security';
-import { env } from '@/lib/config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,7 +17,7 @@ export const runtime = 'nodejs';
 export async function POST(request: Request) {
   return handleRoute('auth/google/disconnect', async () => {
     assertAdmin(request);
-    await disconnect();
+    const { environmentTokenIgnored } = await disconnect();
     await recordAudit({
       actor: actorFromRequest(request),
       action: 'google_disconnected',
@@ -19,12 +25,10 @@ export async function POST(request: Request) {
       status: 'success',
       source: 'dashboard',
     });
-    // A refresh token pinned in the environment survives a disconnect by design.
-    const envPinned = Boolean(env().GOOGLE_REFRESH_TOKEN);
     return ok(
-      { disconnected: true, environmentTokenStillSet: envPinned },
-      envPinned
-        ? 'Stored connection cleared. GOOGLE_REFRESH_TOKEN is still set in the environment, so the app remains connected.'
+      { disconnected: true, environmentTokenIgnored },
+      environmentTokenIgnored
+        ? 'Google account disconnected. GOOGLE_REFRESH_TOKEN is still set in the environment but is ignored until you reconnect — remove it in Vercel to tidy up.'
         : 'Google account disconnected.',
     );
   });

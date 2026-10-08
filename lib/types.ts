@@ -1,8 +1,8 @@
 /** Shared domain types. Kept free of secrets so they can cross to the client. */
 
-import type { GbpAccessStatus } from './gbp-access';
+import type { GbpAccessSnapshot, GbpAccessStatus } from './gbp-status';
 
-export type { GbpAccessStatus };
+export type { GbpAccessSnapshot, GbpAccessStatus };
 
 export type ApiStatus = 'ok' | 'pending_approval' | 'not_connected' | 'error';
 
@@ -63,6 +63,8 @@ export type ReplyDraft = {
   language: ReviewLanguage;
   status: Exclude<ReplyStatus, 'no_reply' | 'replied_on_google'>;
   model: string;
+  /** Things worth a second look before approving, e.g. "mentions a refund". Advisory only. */
+  flags?: string[];
   createdAt: string;
   updatedAt: string;
   approvedAt?: string;
@@ -104,6 +106,8 @@ export type GbpPost = {
   updatedAt: string;
   publishedAt?: string;
   error?: string;
+  /** Automatic publish attempts that ended in a temporary Google fault. */
+  attempts?: number;
 };
 
 /**
@@ -138,6 +142,8 @@ export type PerformanceSnapshot = {
   locationName: string;
   rangeStart: string;
   rangeEnd: string;
+  /** Length of the requested range in days. Absent on snapshots cached by older builds. */
+  days?: number;
   series: MetricSeries[];
   fetchedAt: string;
 };
@@ -159,19 +165,24 @@ export type GbpLocation = {
 
 export type ConnectionState = {
   /**
-   * True when Google answered a Business Profile call. Kept for compatibility;
-   * prefer `oauthConnected` + `apiAccess`, which separate "is the account
-   * linked" from "is API access granted yet".
+   * True when the Business Profile API is proven to be answering — the account
+   * is linked AND at least one API has succeeded. Never true on a cached guess.
    */
   connected: boolean;
   /** The Google account is linked and its refresh token still works. */
   oauthConnected: boolean;
-  /** Business Profile API access state — pending, available, or a fault. */
+  /** Business Profile API access state — available, pending, or a specific fault. */
   apiAccess: GbpAccessStatus;
   /** Plain-language explanation of apiAccess. Never a raw Google payload. */
   apiAccessMessage: string;
+  /** The full per-API picture behind apiAccess. */
+  access: GbpAccessSnapshot;
   /** True once we have a usable refresh token. */
   hasRefreshToken: boolean;
+  /** Which credential is in use. Never the credential itself. */
+  credentialSource: 'stored' | 'environment' | null;
+  /** GOOGLE_REFRESH_TOKEN is set but ignored because the account was disconnected. */
+  environmentTokenIgnored: boolean;
   connectedAt?: string;
   /** Email of the Google account that authorised, when we could read it. */
   googleAccountEmail?: string;
@@ -179,6 +190,11 @@ export type ConnectionState = {
   locations: GbpLocation[];
   selectedAccount?: string;
   selectedLocation?: string;
+  selectedLocationTitle?: string;
+  /** pinned = environment, selected = chosen in the dashboard, auto = first one Google listed. */
+  selectionSource: 'pinned' | 'selected' | 'auto' | null;
+  /** Where the account/location lists came from. */
+  discovery: { source: 'live' | 'cached' | 'none'; fetchedAt?: string; error?: string };
   lastError?: string;
 };
 
@@ -254,6 +270,7 @@ export type AuditAction =
   | 'settings_updated'
   | 'google_connected'
   | 'google_disconnected'
+  | 'google_access_checked'
   // --- Meta Social Automation ---
   | 'meta_connected'
   | 'meta_disconnected'
@@ -311,7 +328,27 @@ export type SystemHealthReport = {
 };
 
 export type DashboardSummary = {
-  connection: { connected: boolean; label: string; detail: string };
+  connection: {
+    /** A Google credential is held (the account is linked), whatever Google last said. */
+    linked: boolean;
+    /** True only when the Business Profile API is proven to be answering. */
+    connected: boolean;
+    /** Structured status — the UI keys off this, never off `label` text. */
+    status: GbpAccessStatus;
+    label: string;
+    detail: string;
+    /** Last time Google answered a request successfully. */
+    lastSuccessAt: string | null;
+    locationTitle?: string;
+    locationPath?: string;
+  };
+  /** The full per-API picture, from the same source every other page reads. */
+  access: GbpAccessSnapshot;
+  /** Where the review figures came from. 'cache' must be shown as such. */
+  reviewsSource: 'google' | 'cache' | 'mock' | 'none';
+  reviewsFetchedAt?: string;
+  /** Plain-language reason the reviews could not be refreshed live. */
+  reviewsNote?: string;
   newReviews: number;
   unansweredReviews: number;
   pendingDrafts: number;
@@ -320,7 +357,12 @@ export type DashboardSummary = {
   publishedPosts: number;
   averageRating: number | null;
   totalReviews: number;
-  automation: { enabled: boolean; lastRuns: AutomationRun[] };
+  automation: {
+    enabled: boolean;
+    lastRuns: AutomationRun[];
+    /** Most recent run of each task — a plain overwrite, so never lost to a race. */
+    latestByTask: AutomationRun[];
+  };
   warnings: string[];
   /**
    * The few most recent reviews, for the dashboard's "Recent reviews" section.

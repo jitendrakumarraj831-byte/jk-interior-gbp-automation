@@ -42,20 +42,34 @@ async function load(env: Record<string, string | undefined>) {
   }
   return {
     access: await import('@/lib/gbp-access'),
+    status: await import('@/lib/gbp-status'),
+    errors: await import('@/lib/errors'),
+    store: await import('@/lib/store'),
     config: await import('@/lib/config'),
     mock: await import('@/lib/gbp-mock'),
   };
 }
 
+async function loadErrors() {
+  return load({});
+}
+
 /* ----------------------- 1-4. access classification ---------------------- */
 
 describe('access state classification', () => {
-  it('1+2. 0 QPM / API-not-enabled is "pending", not a disconnect', async () => {
+  it('1. only a closed quota ("limit 0") means approval is pending', async () => {
     const { access } = await load({});
     expect(access.statusFromErrorCode('GBP_QUOTA_EXCEEDED')).toBe('pending');
-    expect(access.statusFromErrorCode('GBP_API_NOT_ENABLED')).toBe('pending');
     expect(access.describeAccess('pending')).toContain('connected');
     expect(access.describeAccess('pending')).toContain('pending approval');
+  });
+
+  it('2. a disabled API is NOT "approval pending" — it is something the owner can fix', async () => {
+    const { access } = await load({});
+    expect(access.statusFromErrorCode('GBP_API_NOT_ENABLED')).toBe('permission_error');
+    const text = access.describeAccess('permission_error', 'GBP_API_NOT_ENABLED');
+    expect(text).toMatch(/enable/i);
+    expect(text).not.toMatch(/pending approval/i);
   });
 
   it('3. a genuine 429 is a temporary rate limit, not pending approval', async () => {
@@ -86,33 +100,241 @@ describe('access state classification', () => {
   });
 });
 
+/* -------------------------- Google error classifier ----------------------- */
+
+describe('classifyGoogleError', () => {
+  const quotaBody = (limit: string) => ({
+    error: {
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      message: "Quota exceeded for quota metric 'Requests' and limit 'Requests per minute'",
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: 'RATE_LIMIT_EXCEEDED',
+          metadata: { quota_limit_value: limit },
+        },
+      ],
+    },
+  });
+
+  it('429 with a zero quota is approval pending', async () => {
+    const { errors } = await loadErrors();
+    expect(errors.classifyGoogleError(429, quotaBody('0')).code).toBe('GBP_QUOTA_EXCEEDED');
+  });
+
+  it('429 with a real quota is a temporary rate limit', async () => {
+    const { errors } = await loadErrors();
+    expect(errors.classifyGoogleError(429, quotaBody('300')).code).toBe('GBP_RATE_LIMITED');
+  });
+
+  it('403 SERVICE_DISABLED is "API not enabled", never pending approval', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, {
+      error: {
+        code: 403,
+        status: 'PERMISSION_DENIED',
+        message: 'My Business API has not been used in project 123 before or it is disabled.',
+        details: [{ reason: 'SERVICE_DISABLED' }],
+      },
+    });
+    expect(error.code).toBe('GBP_API_NOT_ENABLED');
+    expect(errors.isApprovalPending(error.code)).toBe(false);
+  });
+
+  it('403 insufficient scope asks the owner to reconnect', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, {
+      error: { status: 'PERMISSION_DENIED', message: 'Request had insufficient authentication scopes.', details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] },
+    });
+    expect(error.code).toBe('GOOGLE_AUTH_FAILED');
+  });
+
+  it('a plain 403 means the account cannot manage this profile', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, { error: { message: 'The caller does not have permission' } });
+    expect(error.code).toBe('GBP_FORBIDDEN');
+  });
+
+  it('401, 404, 409 and 5xx each get their own code', async () => {
+    const { errors } = await loadErrors();
+    expect(errors.classifyGoogleError(401, {}).code).toBe('GOOGLE_AUTH_FAILED');
+    expect(errors.classifyGoogleError(404, {}).code).toBe('GBP_NOT_FOUND');
+    expect(errors.classifyGoogleError(409, {}).code).toBe('CONFLICT');
+    for (const status of [500, 502, 503, 504]) {
+      const error = errors.classifyGoogleError(status, {});
+      expect(error.code).toBe('GOOGLE_API_ERROR');
+      expect(error.httpStatus).toBe(502);
+    }
+  });
+
+  it('never echoes the raw Google payload into the user-facing message', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(400, {
+      error: { message: 'SECRET-LOOKING internal detail ya29.abcdef' },
+    });
+    expect(error.message).not.toContain('SECRET-LOOKING');
+    expect(error.message).not.toContain('ya29');
+  });
+});
+
+/* ------------- success overrides pending (the headline regression) -------- */
+
+describe('a successful Google call always wins over an older "pending"', () => {
+  it('pending → available the moment ANY API answers, and the state persists', async () => {
+    const { access, errors } = await load({});
+    const pending = new errors.AppError('GBP_QUOTA_EXCEEDED', 'quota', 503);
+
+    await access.recordServiceFailure('accounts', pending);
+    await access.recordServiceFailure('reviews', pending);
+    expect((await access.readAccess()).status).toBe('pending');
+
+    // Performance works (a different API with its own approval).
+    await access.recordServiceSuccess('performance');
+    const snapshot = await access.readAccess();
+    expect(snapshot.status).toBe('available');
+    expect(snapshot.lastSuccessAt).not.toBeNull();
+    // The APIs that still fail are reported, not hidden.
+    expect(snapshot.degraded.map((s) => s.service).sort()).toEqual(['accounts', 'reviews']);
+
+    // …and it is durable: a fresh read (a new serverless instance) agrees.
+    expect((await access.readAccess()).status).toBe('available');
+  });
+
+  it('a stale legacy "pending" record can no longer outrank a success', async () => {
+    const { access, store } = await load({});
+    await store.getStore().set(store.nsKey('gbp', 'access'), {
+      status: 'pending',
+      checkedAt: new Date().toISOString(),
+      lastCode: 'GBP_QUOTA_EXCEEDED',
+    });
+    expect((await access.readAccess()).status).toBe('unknown');
+    await access.recordServiceSuccess('reviews');
+    expect((await access.readAccess()).status).toBe('available');
+  });
+
+  it('a later credential failure outranks an older success; a newer success clears it at once', async () => {
+    const { access, errors } = await load({});
+    await access.recordServiceSuccess('reviews');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await access.recordServiceFailure('reviews', new errors.AppError('GOOGLE_AUTH_FAILED', 'revoked', 401));
+    expect((await access.readAccess()).status).toBe('auth_error');
+
+    // No waiting for any debounce window: a success proves the credential works.
+    await access.recordServiceSuccess('reviews');
+    expect((await access.readAccess()).status).toBe('available');
+  });
+
+  it('a transient failure of one API does not erase another API\'s success', async () => {
+    const { access, errors } = await load({});
+    await access.recordServiceSuccess('performance');
+    await access.recordServiceFailure('reviews', new errors.AppError('GBP_RATE_LIMITED', 'slow down', 503));
+    const snapshot = await access.readAccess();
+    expect(snapshot.status).toBe('available');
+    expect(snapshot.degraded.map((s) => s.service)).toEqual(['reviews']);
+  });
+
+  it('404 / 409 / 400 say nothing about access and change nothing', async () => {
+    const { access, errors } = await load({});
+    await access.recordServiceSuccess('reviews');
+    for (const error of [
+      new errors.AppError('GBP_NOT_FOUND', 'x', 404),
+      new errors.AppError('CONFLICT', 'x', 409),
+      new errors.AppError('GOOGLE_API_ERROR', 'x', 400),
+    ]) {
+      await access.recordServiceFailure('reviews', error);
+    }
+    expect((await access.readAccess()).status).toBe('available');
+  });
+
+  it('with nothing available the most actionable failure is reported', async () => {
+    const { status } = await load({});
+    const failing = (service: 'accounts' | 'reviews', st: 'pending' | 'permission_error') => ({
+      service,
+      status: st,
+      checkedAt: new Date().toISOString(),
+    });
+    const snapshot = status.deriveSnapshot(
+      [failing('accounts', 'pending'), failing('reviews', 'permission_error')],
+      null,
+    );
+    expect(snapshot.status).toBe('permission_error');
+  });
+});
+
 /* ------------------------- 5. cooldown / no retries ---------------------- */
 
 describe('retry protection', () => {
-  it('5. a pending result suppresses further calls inside the cooldown', async () => {
-    const { access } = await load({});
-    await access.recordAccessFailure('GBP_QUOTA_EXCEEDED');
-    expect(await access.shouldSkipGoogleCalls()).toBe(true);
+  const closed = async () => {
+    const loaded = await load({});
+    const pending = new loaded.errors.AppError('GBP_QUOTA_EXCEEDED', 'quota', 503);
+    return { ...loaded, pending };
+  };
+
+  it('5. a recent pending result suppresses calls to THAT api inside the cooldown', async () => {
+    const { access, pending } = await closed();
+    await access.recordServiceFailure('reviews', pending);
+    expect(await access.shouldSkipGoogleCalls({ service: 'reviews' })).toBe(true);
+    // Other APIs were never found closed, so they are not gated.
+    expect(await access.shouldSkipGoogleCalls({ service: 'performance' })).toBe(false);
   });
 
-  it('5b. the cooldown expires so approval is picked up automatically', async () => {
-    const { access } = await load({});
-    await access.recordAccessFailure('GBP_QUOTA_EXCEEDED');
+  it('5b. the cooldown is short (15 minutes) so approval is picked up quickly', async () => {
+    const { access, pending } = await closed();
+    expect(access.ACCESS_COOLDOWN_MS).toBeLessThanOrEqual(15 * 60 * 1000);
+    await access.recordServiceFailure('reviews', pending);
     const later = Date.now() + access.ACCESS_COOLDOWN_MS + 1000;
-    expect(await access.shouldSkipGoogleCalls(later)).toBe(false);
+    expect(await access.shouldSkipGoogleCalls({ service: 'reviews', now: later })).toBe(false);
   });
 
   it('5c. a transient rate limit is never cached into a skip', async () => {
-    const { access } = await load({});
-    await access.recordAccessFailure('GBP_RATE_LIMITED');
+    const { access, errors } = await closed();
+    await access.recordServiceFailure('reviews', new errors.AppError('GBP_RATE_LIMITED', 'x', 503));
+    expect(await access.shouldSkipGoogleCalls({ service: 'reviews' })).toBe(false);
+  });
+
+  it('5d. a success on ANY api lifts the gate immediately', async () => {
+    const { access, pending } = await closed();
+    await access.recordServiceFailure('reviews', pending);
+    expect(await access.shouldSkipGoogleCalls({ service: 'reviews' })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await access.recordServiceSuccess('performance');
+    expect(await access.shouldSkipGoogleCalls({ service: 'reviews' })).toBe(false);
     expect(await access.shouldSkipGoogleCalls()).toBe(false);
   });
 
-  it('5d. availability clears the skip immediately', async () => {
-    const { access } = await load({});
-    await access.recordAccessFailure('GBP_QUOTA_EXCEEDED');
-    await access.recordAccessAvailable();
+  it('5e. the whole-snapshot gate needs EVERY known api to be closed', async () => {
+    const { access, pending } = await closed();
+    await access.recordServiceFailure('accounts', pending);
+    expect(await access.shouldSkipGoogleCalls()).toBe(true);
+    await access.recordServiceSuccess('performance');
     expect(await access.shouldSkipGoogleCalls()).toBe(false);
+  });
+
+  it('5f. an auth failure never gates — it must stay visible', async () => {
+    const { access, errors } = await closed();
+    await access.recordServiceFailure('reviews', new errors.AppError('GOOGLE_AUTH_FAILED', 'x', 401));
+    expect(await access.shouldSkipGoogleCalls()).toBe(false);
+  });
+
+  it('5g. an automatic re-check is due only for a non-available state, once per cooldown', async () => {
+    const { access, pending } = await closed();
+    expect(access.isCheckDue(await access.readAccess())).toBe(true); // never checked
+    await access.recordServiceFailure('reviews', pending);
+    expect(access.isCheckDue(await access.readAccess())).toBe(false); // just checked
+    expect(access.isCheckDue(await access.readAccess(), Date.now() + access.ACCESS_COOLDOWN_MS + 1)).toBe(true);
+    await access.recordServiceSuccess('reviews');
+    expect(access.isCheckDue(await access.readAccess(), Date.now() + 24 * 3600 * 1000)).toBe(false);
+  });
+
+  it('5h. a proven state with a still-failing api is re-checked once per cooldown, so a late approval shows up', async () => {
+    const { access, pending } = await closed();
+    await access.recordServiceSuccess('performance');
+    await access.recordServiceFailure('accounts', pending);
+    const snapshot = await access.readAccess();
+    expect(snapshot.status).toBe('available');
+    expect(access.isCheckDue(snapshot)).toBe(false); // just checked
+    expect(access.isCheckDue(snapshot, Date.now() + access.ACCESS_COOLDOWN_MS + 1)).toBe(true);
   });
 });
 
@@ -201,8 +423,11 @@ describe('publish safety under mock mode', () => {
 
   it('10. mock publishing is simulated, never sent to Google', () => {
     expect(publishRoute).toContain('simulatePublish(draft.reviewName)');
-    expect(postsPublish).toContain('simulatePostPublish');
-    expect(tasks).toContain('simulatePostPublish(post.id)');
+    // Posts: every publish path (manual, create+publish, cron) shares one publisher.
+    const publisher = read('lib/post-publisher.ts');
+    expect(publisher).toContain('simulatePostPublish');
+    expect(postsPublish).toContain('publishPostOnce');
+    expect(tasks).toContain('publishPostOnce');
   });
 
   it('11. approval is still required, with no force/bypass field', () => {
@@ -266,7 +491,7 @@ describe('cron failure classification', () => {
   });
 
   it('15b. every GBP-dependent task checks the skip gate first', () => {
-    const gated = tasks.match(/shouldSkipGbpWork\(\)/g)?.length ?? 0;
+    const gated = tasks.match(/shouldSkipGbpWork\('/g)?.length ?? 0;
     // sync-reviews, generate-drafts, publish-posts, sync-performance
     expect(gated).toBeGreaterThanOrEqual(4);
   });

@@ -32,7 +32,7 @@ export class ApiError extends Error {
 const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
- * Reads the CSRF cookie the middleware issued. It is intentionally not
+ * Reads the CSRF cookie the proxy issued. It is intentionally not
  * httpOnly: echoing it back in a header is what proves the request came from a
  * page on our own origin, which a cross-site attacker cannot do.
  */

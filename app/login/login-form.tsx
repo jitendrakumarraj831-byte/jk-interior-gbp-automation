@@ -17,7 +17,7 @@ export default function LoginForm({ next }: { next: string }) {
     setError(null);
     try {
       await api.post('/api/auth/login', { password });
-      // Full navigation so the new session cookie is picked up by middleware.
+      // Full navigation so the new session cookie is picked up by the proxy.
       window.location.href = next;
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Sign-in failed.');

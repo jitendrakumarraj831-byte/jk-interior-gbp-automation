@@ -11,7 +11,14 @@ import { NextResponse } from 'next/server';
 import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { exchangeCodeForTokens } from '@/lib/google-auth';
 import { log } from '@/lib/logger';
-import { handleRoute, OAUTH_STATE_COOKIE, readCookie, verifyOAuthState } from '@/lib/security';
+import { AppError } from '@/lib/errors';
+import {
+  assertAdminSession,
+  handleRoute,
+  OAUTH_STATE_COOKIE,
+  readCookie,
+  verifyOAuthState,
+} from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,6 +33,19 @@ function redirectToConnection(request: Request, params: Record<string, string>):
 
 export async function GET(request: Request) {
   return handleRoute('auth/google/callback', async () => {
+    // The browser must still be signed in as the admin. Without this, an expired
+    // or foreign session that somehow held a valid state cookie could still
+    // store a refresh token.
+    try {
+      assertAdminSession(request);
+    } catch (error) {
+      const destination =
+        error instanceof AppError && error.code === 'ADMIN_AUTH_NOT_CONFIGURED'
+          ? '/config-error'
+          : '/login?next=/dashboard/connection';
+      return NextResponse.redirect(new URL(destination, request.url));
+    }
+
     const url = new URL(request.url);
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
@@ -71,10 +91,17 @@ export async function GET(request: Request) {
         ...(meta.googleAccountEmail ? { account: meta.googleAccountEmail } : {}),
       });
     } catch (error) {
+      // Only our own, already-sanitised messages are shown. Anything else could
+      // carry internals, so it is logged and replaced with a generic line.
+      if (!(error instanceof AppError)) {
+        log.error('auth', 'Unexpected failure completing the Google connection.', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return redirectToConnection(request, {
         connect: 'error',
         reason:
-          error instanceof Error ? error.message : 'Could not complete the Google connection.',
+          error instanceof AppError ? error.message : 'Could not complete the Google connection.',
       });
     }
   });

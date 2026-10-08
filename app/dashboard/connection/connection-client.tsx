@@ -3,13 +3,15 @@
 /**
  * Google connection.
  *
- * Six honest states: not connected, connecting, connected, approval pending,
- * configuration required, connection error. Each gets its own copy and its own
- * next step. No token or secret value is ever rendered — only booleans and
- * Google resource names.
+ * The Google ACCOUNT and Business Profile API ACCESS are two separate facts,
+ * reported separately. Everything shown here is read from one place — the
+ * shared access snapshot returned by /api/accounts — so this page, the
+ * dashboard and Settings cannot disagree. No token or secret is ever rendered:
+ * only booleans, statuses and Google resource names.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, ApiError, formatDateTime, relativeTime } from '@/lib/client';
 import {
@@ -23,6 +25,7 @@ import {
   SettingsIcon,
   ShieldIcon,
 } from '@/components/icons';
+import { AccessServiceList, CheckAccessButton } from '@/components/gbp-access-panel';
 import {
   Badge,
   Button,
@@ -36,6 +39,7 @@ import {
   StatusPill,
   type Tone,
 } from '@/components/ui';
+import { ACCESS_LABEL } from '@/lib/gbp-status';
 import type { ConnectionState } from '@/lib/types';
 
 type SettingsPayload = {
@@ -48,27 +52,29 @@ type ConnState =
   | 'connected'
   | 'approval_pending'
   | 'rate_limited'
+  | 'checking'
   | 'connection_error';
 
 const STATE_META: Record<ConnState, { label: string; tone: Tone }> = {
-  connected: { label: 'Connected', tone: 'google' },
+  connected: { label: 'Connected & Active', tone: 'google' },
   approval_pending: { label: 'Approval pending', tone: 'warning' },
   rate_limited: { label: 'Rate limited', tone: 'warning' },
+  checking: { label: 'Not checked yet', tone: 'neutral' },
   configuration_required: { label: 'Configuration required', tone: 'neutral' },
-  connection_error: { label: 'Connection error', tone: 'danger' },
+  connection_error: { label: 'Needs attention', tone: 'danger' },
   not_connected: { label: 'Not connected', tone: 'neutral' },
 };
 
 /**
- * The account and the API are two separate things. A linked account whose API
- * access is still pending must never read as "disconnected" — that is the whole
- * point of this mapping.
+ * Collapses the structured access status into one of the page's visual states.
+ * The account and the API are separate: a linked account whose API access is
+ * still pending must never read as "disconnected", and an API that is proven
+ * to be answering must never read as "pending".
  */
 function resolveState(state: ConnectionState, oauthReady: boolean): ConnState {
   if (!oauthReady) return 'configuration_required';
-  if (!state.oauthConnected) {
-    return state.apiAccess === 'auth_error' ? 'connection_error' : 'not_connected';
-  }
+  if (!state.hasRefreshToken) return 'not_connected';
+  if (!state.oauthConnected) return 'connection_error';
   switch (state.apiAccess) {
     case 'available':
       return 'connected';
@@ -76,12 +82,10 @@ function resolveState(state: ConnectionState, oauthReady: boolean): ConnState {
       return 'approval_pending';
     case 'rate_limited':
       return 'rate_limited';
-    case 'auth_error':
-    case 'permission_error':
-    case 'error':
-      return 'connection_error';
+    case 'unknown':
+      return 'checking';
     default:
-      return state.connected ? 'connected' : 'approval_pending';
+      return 'connection_error';
   }
 }
 
@@ -94,31 +98,46 @@ export default function ConnectionClient({
   connectReason: string | null;
   connectedAccount: string | null;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [state, setState] = useState<ConnectionState | null>(null);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  const [callback, setCallback] = useState<{
+    result: string | null;
+    reason: string | null;
+    account: string | null;
+  }>({ result: connectResult, reason: connectReason, account: connectedAccount });
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
+    // Only the most recent request may update the screen, so a slow earlier
+    // response can never overwrite a newer one (stale state after a quick
+    // Disconnect → Reconnect, or a double Refresh).
+    const mine = ++requestId.current;
     try {
       const [connection, config] = await Promise.all([
         api.get<ConnectionState>('/api/accounts'),
         api.get<SettingsPayload>('/api/settings'),
       ]);
+      if (mine !== requestId.current) return;
       setState(connection.data);
       setSettings(config.data);
       setError(null);
     } catch (caught) {
+      if (mine !== requestId.current) return;
       setError(caught instanceof ApiError ? caught.message : 'Could not load the connection state.');
     } finally {
-      setLoading(false);
+      if (mine === requestId.current) setLoading(false);
     }
   }, []);
 
   const refresh = useCallback(() => {
     setLoading(true);
+    setFlash(null);
     void load();
   }, [load]);
 
@@ -126,8 +145,17 @@ export default function ConnectionClient({
     void load();
   }, [load]);
 
+  // The OAuth result arrives as query parameters. Show it once, then clear the
+  // URL so a reload does not resurrect an old banner.
+  useEffect(() => {
+    if (connectResult) router.replace(pathname, { scroll: false });
+  }, [connectResult, pathname, router]);
+
   async function select(kind: 'selectedAccount' | 'selectedLocation', value: string) {
+    if (busy) return;
     setBusy(true);
+    setError(null);
+    setFlash(null);
     try {
       await api.patch('/api/settings', { [kind]: value });
       await load();
@@ -140,7 +168,18 @@ export default function ConnectionClient({
   }
 
   async function disconnect() {
+    if (busy) return;
+    if (
+      !window.confirm(
+        'Disconnect Google? Reviews, posts and performance will stop syncing until you reconnect.',
+      )
+    ) {
+      return;
+    }
     setBusy(true);
+    setError(null);
+    setFlash(null);
+    setCallback({ result: null, reason: null, account: null });
     try {
       const response = await api.post<{ disconnected: boolean }>('/api/auth/google/disconnect');
       setFlash(response.message);
@@ -156,6 +195,15 @@ export default function ConnectionClient({
   const connState = state ? resolveState(state, oauthReady) : 'not_connected';
   const meta = STATE_META[connState];
   const selectedLocation = state?.locations.find((l) => l.name === state.selectedLocation);
+  const locationLabel =
+    selectedLocation?.title ??
+    state?.selectedLocationTitle ??
+    (state?.selectedLocation ? state.selectedLocation : null);
+  const accountLabel =
+    state?.accounts.find((a) => a.name === state.selectedAccount)?.accountName ??
+    state?.selectedAccount ??
+    state?.accounts[0]?.accountName ??
+    null;
 
   return (
     <>
@@ -170,22 +218,22 @@ export default function ConnectionClient({
         }
       />
 
-      {connectResult === 'success' ? (
+      {callback.result === 'success' ? (
         <div className="mb-4">
           <Callout tone="success" title="Google account connected" icon={<CheckCircleIcon size={18} />}>
             <p>
-              {connectedAccount
-                ? `Connected as ${connectedAccount}.`
+              {callback.account
+                ? `Connected as ${callback.account}.`
                 : 'Your credentials are stored securely on the server.'}
             </p>
           </Callout>
         </div>
       ) : null}
 
-      {connectResult === 'error' ? (
+      {callback.result === 'error' ? (
         <div className="mb-4">
           <Callout tone="danger" title="Connection did not complete" icon={<AlertIcon size={18} />}>
-            <p>{connectReason ?? 'Google did not complete the authorization.'}</p>
+            <p>{callback.reason ?? 'Google did not complete the authorization.'}</p>
           </Callout>
         </div>
       ) : null}
@@ -199,7 +247,7 @@ export default function ConnectionClient({
       ) : null}
       {flash ? (
         <div className="mb-4">
-          <Callout tone="success" title="Saved" icon={<CheckCircleIcon size={18} />}>
+          <Callout tone="success" title="Done" icon={<CheckCircleIcon size={18} />}>
             <p>{flash}</p>
           </Callout>
         </div>
@@ -240,8 +288,15 @@ export default function ConnectionClient({
                         Google account
                       </dt>
                       <dd className="mt-1">
-                        <StatusPill tone={state.oauthConnected ? 'google' : 'neutral'} pulse={state.oauthConnected}>
-                          {state.oauthConnected ? 'Connected' : 'Not connected'}
+                        <StatusPill
+                          tone={state.oauthConnected ? 'google' : 'neutral'}
+                          pulse={state.oauthConnected}
+                        >
+                          {state.oauthConnected
+                            ? 'Connected'
+                            : state.hasRefreshToken
+                              ? 'Reconnect needed'
+                              : 'Not connected'}
                         </StatusPill>
                       </dd>
                     </div>
@@ -251,7 +306,7 @@ export default function ConnectionClient({
                       </dt>
                       <dd className="mt-1">
                         <StatusPill tone={meta.tone} pulse={connState === 'connected'}>
-                          {connState === 'approval_pending' ? 'Approval pending' : meta.label}
+                          {meta.label}
                         </StatusPill>
                       </dd>
                     </div>
@@ -264,18 +319,33 @@ export default function ConnectionClient({
               </div>
 
               <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-                {/* Pending access is not an OAuth problem, so no reconnect prompt. */}
-                {connState === 'approval_pending' ? null : (
-                  <ButtonLink
-                    href="/api/auth/google"
-                    external
-                    disabled={!oauthReady}
-                    icon={<GoogleIcon size={17} />}
+                {oauthReady && state.hasRefreshToken ? (
+                  <CheckAccessButton
+                    variant={connState === 'connected' ? 'secondary' : 'primary'}
                     className="flex-1 sm:flex-none"
-                  >
-                    {state.hasRefreshToken ? 'Reconnect' : 'Connect Google'}
-                  </ButtonLink>
-                )}
+                    onChecked={(_, message) => {
+                      setError(null);
+                      setFlash(message);
+                      setCallback({ result: null, reason: null, account: null });
+                      void load();
+                    }}
+                    onError={(message) => {
+                      setFlash(null);
+                      setError(message);
+                      void load();
+                    }}
+                  />
+                ) : null}
+                <ButtonLink
+                  href="/api/auth/google"
+                  external
+                  variant={connState === 'connected' || state.oauthConnected ? 'secondary' : 'primary'}
+                  disabled={!oauthReady}
+                  icon={<GoogleIcon size={17} />}
+                  className="flex-1 sm:flex-none"
+                >
+                  {state.hasRefreshToken ? 'Reconnect' : 'Connect Google'}
+                </ButtonLink>
                 {state.hasRefreshToken ? (
                   <Button
                     variant="secondary"
@@ -292,25 +362,31 @@ export default function ConnectionClient({
             {state.lastError ? (
               <div className="mt-4">
                 <Callout
-                  tone={connState === 'approval_pending' ? 'warning' : 'danger'}
-                  title={
-                    connState === 'approval_pending'
-                      ? 'Google Business Profile API approval pending'
-                      : 'Google returned an error'
-                  }
-                  icon={
-                    connState === 'approval_pending' ? <ClockIcon size={18} /> : <AlertIcon size={18} />
-                  }
+                  tone="danger"
+                  title={connState === 'rate_limited' ? 'Google is rate limiting' : 'Google reported a problem'}
+                  icon={<AlertIcon size={18} />}
                 >
                   <p>{state.lastError}</p>
-                  {connState === 'approval_pending' ? (
-                    <p className="mt-2 text-ink-500">
-                      Nothing more to do here — the integration activates itself once Google
-                      approves your project.
-                    </p>
-                  ) : null}
                 </Callout>
               </div>
+            ) : connState === 'approval_pending' ? (
+              <div className="mt-4">
+                <Callout tone="warning" title="Waiting for Google" icon={<ClockIcon size={18} />}>
+                  <p>
+                    Nothing to do here. The integration switches on by itself once Google opens API
+                    access, and this page checks again automatically. Already approved? Press{' '}
+                    <strong>Check access now</strong>.
+                  </p>
+                </Callout>
+              </div>
+            ) : null}
+
+            {state.environmentTokenIgnored ? (
+              <p className="mt-4 rounded-xl bg-subtle px-3.5 py-3 text-[0.8125rem] leading-relaxed text-ink-600">
+                <code className="font-medium text-ink-800">GOOGLE_REFRESH_TOKEN</code> is still set in
+                your environment but is ignored because you disconnected. Reconnect to use Google
+                again, or remove the variable in Vercel.
+              </p>
             ) : null}
 
             {!oauthReady ? (
@@ -332,25 +408,39 @@ export default function ConnectionClient({
               tone="brand"
             />
             <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-              <Fact label="Google account" value={state.googleAccountEmail ?? 'Not linked'} />
-              <Fact
-                label="Business Profile"
-                value={
-                  state.accounts.find((a) => a.name === state.selectedAccount)?.accountName ??
-                  (state.accounts[0]?.accountName || 'Not available')
-                }
-              />
+              <Fact label="Google account" value={state.googleAccountEmail ?? (state.hasRefreshToken ? 'Connected' : 'Not linked')} />
+              <Fact label="Business Profile" value={accountLabel ?? 'Not available'} />
               <Fact
                 label="Location"
                 value={
-                  selectedLocation?.title ??
+                  locationLabel ??
                   (connState === 'approval_pending' ? 'Waiting for API access' : 'Not selected')
+                }
+                hint={
+                  state.selectionSource === 'pinned'
+                    ? 'Pinned by environment'
+                    : state.selectionSource === 'auto'
+                      ? 'Detected automatically — choose one below to fix it'
+                      : undefined
                 }
               />
               <Fact
-                label="Last sync"
-                value={state.connectedAt ? relativeTime(state.connectedAt) : 'Never'}
-                hint={state.connectedAt ? formatDateTime(state.connectedAt) : undefined}
+                label="Last successful sync"
+                value={
+                  state.access.lastSuccessAt ? relativeTime(state.access.lastSuccessAt) : 'Never'
+                }
+                hint={state.access.lastSuccessAt ? formatDateTime(state.access.lastSuccessAt) : undefined}
+              />
+              <Fact
+                label="Credential"
+                value={
+                  state.credentialSource === 'stored'
+                    ? 'Saved from Connect Google'
+                    : state.credentialSource === 'environment'
+                      ? 'GOOGLE_REFRESH_TOKEN (environment)'
+                      : 'None'
+                }
+                hint={state.connectedAt ? `Connected ${formatDateTime(state.connectedAt)}` : undefined}
               />
             </dl>
 
@@ -361,6 +451,29 @@ export default function ConnectionClient({
               </p>
             </div>
           </Card>
+
+          {/* ----------------------------- API status -------------------- */}
+          {state.hasRefreshToken ? (
+            <Card>
+              <SectionHeader
+                title="Google APIs"
+                description="Each Business Profile API is checked on its own"
+                icon={<ShieldIcon size={18} />}
+                tone="google"
+                action={
+                  <Badge tone={ACCESS_LABEL[state.apiAccess].tone as Tone} dot>
+                    {ACCESS_LABEL[state.apiAccess].label}
+                  </Badge>
+                }
+              />
+              <AccessServiceList access={state.access} />
+              {state.access.checkedAt ? (
+                <p className="mt-3 border-t border-line pt-3 text-xs text-ink-400">
+                  Last checked {relativeTime(state.access.checkedAt)}
+                </p>
+              ) : null}
+            </Card>
+          ) : null}
 
           {/* --------------------------- locations ----------------------- */}
           <Card>
@@ -373,16 +486,25 @@ export default function ConnectionClient({
                 settings?.config.pinnedLocation ? <Badge tone="neutral">Pinned by env</Badge> : undefined
               }
             />
+            {state.discovery.error && state.locations.length > 0 ? (
+              <p className="mb-3 rounded-xl bg-warning-50 px-3.5 py-2.5 text-xs leading-relaxed text-warning-700">
+                Showing the last known list — Google could not refresh it just now.
+              </p>
+            ) : null}
             {state.locations.length === 0 ? (
               <EmptyState
                 icon={<PinIcon size={22} />}
                 tone="google"
                 compact
-                title="No locations available yet"
+                title="No locations to show yet"
                 description={
                   connState === 'approval_pending'
                     ? 'Waiting for API access. Your locations will list here automatically as soon as Google approves this project — no action needed.'
-                    : 'Connect the Google account that manages your Business Profile and your locations will appear here.'
+                    : state.discovery.error
+                      ? `Google could not list your locations: ${state.discovery.error}`
+                      : state.hasRefreshToken
+                        ? 'Press Check access now. If Google reports no locations, this account does not manage a Business Profile.'
+                        : 'Connect the Google account that manages your Business Profile and your locations will appear here.'
                 }
               />
             ) : (
@@ -412,7 +534,7 @@ export default function ConnectionClient({
                         <Button
                           size="sm"
                           variant="secondary"
-                          disabled={busy}
+                          disabled={busy || state.selectionSource === 'pinned'}
                           onClick={() => void select('selectedLocation', location.name)}
                         >
                           Use this
@@ -474,7 +596,7 @@ function Fact({ label, value, hint }: { label: string; value: string; hint?: str
       <dd className="mt-1 truncate text-sm font-medium text-ink-900" title={value}>
         {value}
       </dd>
-      {hint ? <p className="mt-0.5 truncate text-xs text-ink-400">{hint}</p> : null}
+      {hint ? <p className="mt-0.5 break-words text-xs text-ink-400">{hint}</p> : null}
     </div>
   );
 }

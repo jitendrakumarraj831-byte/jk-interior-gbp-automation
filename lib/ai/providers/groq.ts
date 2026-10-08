@@ -16,7 +16,9 @@ let client: OpenAI | null = null;
 
 function sdk(): OpenAI {
   if (!client) {
-    client = new OpenAI({ apiKey: env().GROQ_API_KEY, baseURL: GROQ_BASE_URL });
+    // maxRetries 0: the router owns fallback. The SDK's own retries would sit on a
+    // 429 for as long as the provider asks and burn the whole timeout budget.
+    client = new OpenAI({ apiKey: env().GROQ_API_KEY, baseURL: GROQ_BASE_URL, maxRetries: 0 });
   }
   return client;
 }

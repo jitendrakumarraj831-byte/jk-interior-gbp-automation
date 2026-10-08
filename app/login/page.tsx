@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { adminAuthMode } from '@/lib/config';
+import { safeNextPath } from '@/lib/redirect';
 import LoginForm from './login-form';
 
 export const dynamic = 'force-dynamic';
@@ -22,9 +23,9 @@ export default async function LoginPage({
   if (mode === 'development_only') redirect('/dashboard');
 
   const { next } = await searchParams;
-  // Only same-origin relative paths are accepted, so ?next= cannot be used as
-  // an open redirect.
-  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+  // Only same-origin absolute paths are accepted, so ?next= cannot be used as
+  // an open redirect (including the `/\host` backslash trick).
+  const safeNext = safeNextPath(next);
 
   return (
     <main className="flex min-h-dvh items-center justify-center bg-gradient-to-b from-brand-50/60 via-canvas to-canvas px-5 py-10">

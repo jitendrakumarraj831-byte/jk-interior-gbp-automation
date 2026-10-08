@@ -13,7 +13,14 @@ import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { exchangeCodeForConnection } from '@/lib/meta/auth';
 import { log } from '@/lib/logger';
 import { notify } from '@/lib/notifications';
-import { handleRoute, META_OAUTH_STATE_COOKIE, readCookie, verifyOAuthState } from '@/lib/security';
+import { AppError } from '@/lib/errors';
+import {
+  assertAdminSession,
+  handleRoute,
+  META_OAUTH_STATE_COOKIE,
+  readCookie,
+  verifyOAuthState,
+} from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,6 +35,17 @@ function redirectToSocial(request: Request, params: Record<string, string>): Nex
 
 export async function GET(request: Request) {
   return handleRoute('auth/meta/callback', async () => {
+    // The browser must still be signed in as the admin (see the Google callback).
+    try {
+      assertAdminSession(request);
+    } catch (error) {
+      const destination =
+        error instanceof AppError && error.code === 'ADMIN_AUTH_NOT_CONFIGURED'
+          ? '/config-error'
+          : '/login?next=/dashboard/social';
+      return NextResponse.redirect(new URL(destination, request.url));
+    }
+
     const url = new URL(request.url);
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');

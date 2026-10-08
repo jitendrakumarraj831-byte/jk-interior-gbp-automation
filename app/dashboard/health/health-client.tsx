@@ -29,7 +29,9 @@ function Row({ check }: { check: HealthCheck }) {
     <li className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5 px-4 py-3.5">
       <div className="min-w-0">
         <p className="text-sm font-medium text-ink-900">{check.label}</p>
-        <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500">{check.detail}</p>
+        <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-ink-500 [overflow-wrap:anywhere]">
+          {check.detail}
+        </p>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <StatusPill tone={meta.tone}>{meta.label}</StatusPill>

@@ -32,6 +32,7 @@ import {
   SkeletonCard,
   type Tone,
 } from '@/components/ui';
+import { MAX_POST_TITLE, OFFER_TITLE_LIMIT, POST_SUMMARY_LIMIT, summaryOf } from '@/lib/post-rules';
 import type { CallToActionType, GbpPost, PostStatus, PostType } from '@/lib/types';
 
 export const POST_TYPES: { value: PostType; label: string; blurb: string }[] = [
@@ -122,9 +123,25 @@ export default function PostsClient() {
   }, [editorOpen]);
 
   const ctaMeta = CTA_TYPES.find((c) => c.value === form.ctaType);
-  const valid = form.title.trim().length > 0 && form.description.trim().length > 0;
+  // What Google will actually receive: standard posts fold the title into the text.
+  const summaryLength = summaryOf({
+    type: form.type,
+    title: form.title.trim(),
+    description: form.description.trim(),
+  }).length;
+  const titleLimit = form.type === 'offer' ? OFFER_TITLE_LIMIT : MAX_POST_TITLE;
+  const tooLong = summaryLength > POST_SUMMARY_LIMIT || form.title.trim().length > titleLimit;
+  const valid =
+    form.title.trim().length > 0 && form.description.trim().length > 0 && !tooLong;
 
   async function submit(action: 'draft' | 'schedule' | 'publish_now') {
+    if (busy) return;
+    if (
+      action === 'publish_now' &&
+      !window.confirm('Publish this post to your Google Business Profile right now?')
+    ) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setFlash(null);
@@ -159,6 +176,8 @@ export default function PostsClient() {
   }
 
   async function publishExisting(post: GbpPost) {
+    if (busy) return;
+    if (!window.confirm(`Publish "${post.title}" to your Google Business Profile right now?`)) return;
     setBusy(true);
     setError(null);
     setFlash(null);
@@ -174,6 +193,12 @@ export default function PostsClient() {
   }
 
   async function remove(post: GbpPost) {
+    if (busy) return;
+    const warning =
+      post.status === 'published'
+        ? `Remove "${post.title}" from this dashboard? It will stay live on Google until you delete it there.`
+        : `Delete "${post.title}"? This cannot be undone.`;
+    if (!window.confirm(warning)) return;
     setBusy(true);
     try {
       const response = await api.del<{ deleted: string }>(`/api/posts/${post.id}`);
@@ -303,8 +328,8 @@ export default function PostsClient() {
                   </Badge>
                 </div>
 
-                <p className="mt-1.5 text-sm font-semibold leading-snug text-ink-950">{post.title}</p>
-                <p className="clamp-3 mt-1.5 flex-1 text-[0.8125rem] leading-relaxed text-ink-600">
+                <p className="wrap-any mt-1.5 text-sm font-semibold leading-snug text-ink-950">{post.title}</p>
+                <p className="clamp-3 wrap-any mt-1.5 flex-1 text-[0.8125rem] leading-relaxed text-ink-600">
                   {post.description}
                 </p>
 
@@ -392,7 +417,7 @@ export default function PostsClient() {
             </div>
 
             <div className="grid gap-5 p-4 sm:p-6 lg:grid-cols-5">
-              <div className="space-y-4 lg:col-span-3">
+              <div className="min-w-0 space-y-4 lg:col-span-3">
                 <div>
                   <label htmlFor="post-type" className={labelClass}>
                     What kind of post?
@@ -417,12 +442,17 @@ export default function PostsClient() {
                   </label>
                   <input
                     id="post-title"
-                    maxLength={120}
+                    maxLength={titleLimit}
                     value={form.title}
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     placeholder="Gypsum False Ceiling — monsoon offer"
                     className={inputClass}
                   />
+                  {form.type === 'offer' ? (
+                    <p className="tnum mt-1 text-right text-xs text-ink-400">
+                      {form.title.length}/{OFFER_TITLE_LIMIT} — Google limits an offer headline
+                    </p>
+                  ) : null}
                 </div>
 
                 <div>
@@ -432,14 +462,19 @@ export default function PostsClient() {
                   <textarea
                     id="post-body"
                     rows={5}
-                    maxLength={1500}
+                    maxLength={POST_SUMMARY_LIMIT}
                     value={form.description}
                     onChange={(e) => setForm({ ...form, description: e.target.value })}
                     placeholder="What should customers know? Keep it specific and short."
                     className={`${inputClass} resize-y leading-relaxed`}
                   />
-                  <p className="tnum mt-1 text-right text-xs text-ink-400">
-                    {form.description.length}/1500
+                  <p
+                    className={`tnum mt-1 text-right text-xs ${
+                      summaryLength > POST_SUMMARY_LIMIT ? 'text-danger-600' : 'text-ink-400'
+                    }`}
+                  >
+                    {summaryLength}/{POST_SUMMARY_LIMIT}
+                    {form.type === 'offer' ? '' : ' including the title'}
                   </p>
                 </div>
 
@@ -497,7 +532,7 @@ export default function PostsClient() {
 
                   <div>
                     <label htmlFor="post-when" className={labelClass}>
-                      Schedule <span className="font-normal text-ink-400">optional</span>
+                      Schedule <span className="font-normal text-ink-400">optional · your local time</span>
                     </label>
                     <input
                       id="post-when"
@@ -506,12 +541,16 @@ export default function PostsClient() {
                       onChange={(e) => setForm({ ...form, scheduledFor: e.target.value })}
                       className={inputClass}
                     />
+                    <p className="mt-1 text-xs leading-relaxed text-ink-400">
+                      Scheduled posts are sent by the daily job (about 9:00 am IST), so a post set
+                      for later in the day goes out the next morning.
+                    </p>
                   </div>
                 </div>
               </div>
 
               {/* ------------------------- live preview ------------------ */}
-              <div className="lg:col-span-2">
+              <div className="min-w-0 lg:col-span-2">
                 <p className="mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-400">
                   Preview
                 </p>
@@ -531,10 +570,10 @@ export default function PostsClient() {
                       </span>
                       <span className="text-xs font-medium text-ink-800">JK Interior</span>
                     </div>
-                    <p className="mt-2.5 text-sm font-semibold leading-snug text-ink-950">
+                    <p className="wrap-any mt-2.5 text-sm font-semibold leading-snug text-ink-950">
                       {form.title || 'Your title appears here'}
                     </p>
-                    <p className="mt-1.5 whitespace-pre-line text-[0.8125rem] leading-relaxed text-ink-600">
+                    <p className="wrap-any mt-1.5 whitespace-pre-line text-[0.8125rem] leading-relaxed text-ink-600">
                       {form.description || 'Your description appears here, exactly as customers will read it on Google.'}
                     </p>
                     {form.ctaType !== 'NONE' ? (

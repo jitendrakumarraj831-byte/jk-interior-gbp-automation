@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { actorFromRequest, recordAudit } from '@/lib/audit';
 import { AppError } from '@/lib/errors';
+import { CTA_NEEDS_URL, MAX_POST_TITLE, postContentProblem, POST_SUMMARY_LIMIT } from '@/lib/post-rules';
 import { deletePost, getPost, savePost } from '@/lib/repository';
 import { assertAdmin, handleRoute, httpUrlSchema, ok, parseJson, sanitizeText } from '@/lib/security';
 
@@ -11,8 +12,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const patchSchema = z.object({
-  title: z.string().trim().min(1).max(120).optional(),
-  description: z.string().trim().min(1).max(1500).optional(),
+  title: z.string().trim().min(1).max(MAX_POST_TITLE).optional(),
+  description: z.string().trim().min(1).max(POST_SUMMARY_LIMIT).optional(),
   imageUrl: httpUrlSchema.nullable().optional(),
   scheduledFor: z.string().datetime().nullable().optional(),
   status: z.enum(['draft', 'scheduled', 'cancelled']).optional(),
@@ -40,6 +41,9 @@ export async function PATCH(request: Request, context: Context) {
         409,
       );
     }
+    if (post.status === 'publishing') {
+      throw new AppError('CONFLICT', 'This post is being published right now. Try again in a moment.', 409);
+    }
 
     const body = await parseJson(request, patchSchema);
 
@@ -53,17 +57,28 @@ export async function PATCH(request: Request, context: Context) {
       }
     }
 
-    const saved = await savePost({
+    const next = {
       ...post,
-      title: body.title ? sanitizeText(body.title, 120) : post.title,
-      description: body.description ? body.description.trim().slice(0, 1500) : post.description,
+      title: body.title ? sanitizeText(body.title, MAX_POST_TITLE) : post.title,
+      description: body.description
+        ? body.description.trim().slice(0, POST_SUMMARY_LIMIT)
+        : post.description,
       imageUrl: body.imageUrl === null ? undefined : (body.imageUrl ?? post.imageUrl),
       scheduledFor:
         body.scheduledFor === null ? undefined : (body.scheduledFor ?? post.scheduledFor),
       cta: body.cta ?? post.cta,
       status: body.status ?? post.status,
       error: undefined,
-    });
+    };
+
+    // The edited post as a whole must still be something Google accepts.
+    if (body.cta && CTA_NEEDS_URL[body.cta.type] && !body.cta.url) {
+      throw new AppError('VALIDATION_FAILED', 'This call-to-action button needs a link.', 400);
+    }
+    const problem = postContentProblem(next);
+    if (problem) throw new AppError('VALIDATION_FAILED', problem, 400);
+
+    const saved = await savePost({ ...next, attempts: undefined });
     await recordAudit({
       actor: actorFromRequest(request),
       action: 'post_updated',
@@ -83,6 +98,9 @@ export async function DELETE(request: Request, context: Context) {
 
     const post = await getPost(id);
     if (!post) throw new AppError('NOT_FOUND', 'Post not found.', 404);
+    if (post.status === 'publishing') {
+      throw new AppError('CONFLICT', 'This post is being published right now. Try again in a moment.', 409);
+    }
 
     await deletePost(id);
     await recordAudit({

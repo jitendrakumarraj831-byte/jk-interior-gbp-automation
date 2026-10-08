@@ -48,10 +48,13 @@ describe('9. publishing requires an approved draft', () => {
   });
 
   it('cron auto-publish stays behind an explicit switch that defaults off', () => {
-    expect(tasks).toContain('settings.autoPublishReplies || env().AUTO_PUBLISH_REPLIES');
+    // The environment flag is the master switch: both it AND the dashboard
+    // toggle must be on, so AUTO_PUBLISH_REPLIES=false can never be overridden.
+    expect(tasks).toContain('env().AUTO_PUBLISH_REPLIES && settings.autoPublishReplies');
+    expect(tasks).not.toContain('settings.autoPublishReplies || env().AUTO_PUBLISH_REPLIES');
     expect(tasks).toContain('if (!autoPublish)');
-    // Only drafts an admin approved are ever considered.
-    expect(tasks).toContain("filter((d) => d.status === 'approved')");
+    // Only drafts an admin explicitly approved are ever considered.
+    expect(tasks).toContain("filter((d) => d.status === 'approved' && d.approvedAt)");
   });
 });
 

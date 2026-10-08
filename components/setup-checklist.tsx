@@ -4,7 +4,11 @@
  * Onboarding checklist.
  *
  * Reads the non-sensitive config summary from /api/settings — booleans only,
- * never a credential value — and turns it into four actionable steps.
+ * never a credential value — and the live Business Profile access status from
+ * the same snapshot every other screen uses. A step is only "done" when the
+ * thing it names is actually working: a connected account whose API access is
+ * still pending, or rejected, is NOT complete — so "Setup complete" can never
+ * appear next to a Google status that says otherwise.
  */
 
 import { AutomationIcon, CheckIcon, GoogleIcon, InboxIcon, SparkIcon } from './icons';
@@ -18,8 +22,18 @@ export type SetupConfig = {
   durableStore: boolean;
   aiProviderOrder?: string[];
   aiProvidersConfigured?: Record<string, boolean>;
-  /** Business Profile API access state, tracked separately from OAuth. */
+  /**
+   * Business Profile API access status from the shared snapshot:
+   * unknown | available | pending | rate_limited | auth_error | permission_error | error.
+   */
   gbpAccess?: string;
+  /** Mock Business Profile (development/preview only) stands in for Google. */
+  mockMode?: boolean;
+  /** False when the store is configured but did not answer a round trip. */
+  storeReachable?: boolean;
+  /** When any scheduled job last ran, and whether the latest run of any job failed. */
+  lastCronRunAt?: string | null;
+  cronFailed?: boolean;
 };
 
 type Step = {
@@ -51,25 +65,38 @@ function describeProviders(config: SetupConfig): string {
   return `${primary} is, with ${rest.join(' and ')} as fallback,`;
 }
 
-/** Status chip for the Google step. Pending is never "not configured". */
-function googleStatus(config: SetupConfig): string {
-  if (!config.oauthConfigured) return 'Not configured';
-  if (!config.googleConfigured) return 'Not connected';
+/** True only when Google has actually answered — never on a guess. */
+export function isGoogleStepDone(config: SetupConfig): boolean {
+  if (config.mockMode) return true;
+  return config.googleConfigured && config.gbpAccess === 'available';
+}
+
+function googleStatus(config: SetupConfig): { label: string; tone: Tone } {
+  if (config.mockMode) return { label: 'Mock mode', tone: 'warning' };
+  if (!config.oauthConfigured) return { label: 'Not configured', tone: 'neutral' };
+  if (!config.googleConfigured) return { label: 'Not connected', tone: 'warning' };
   switch (config.gbpAccess) {
     case 'available':
-      return 'Connected';
+      return { label: 'Connected & Active', tone: 'success' };
     case 'auth_error':
-      return 'Reconnect needed';
+      return { label: 'Reconnect needed', tone: 'danger' };
     case 'permission_error':
-      return 'Permission error';
+      return { label: 'Needs attention', tone: 'danger' };
     case 'rate_limited':
-      return 'Rate limited';
+      return { label: 'Rate limited', tone: 'warning' };
+    case 'error':
+      return { label: 'Connection problem', tone: 'danger' };
+    case 'pending':
+      return { label: 'Awaiting approval', tone: 'warning' };
     default:
-      return 'Pending';
+      return { label: 'Not checked yet', tone: 'neutral' };
   }
 }
 
 function googleDescription(config: SetupConfig): string {
+  if (config.mockMode) {
+    return 'A simulated Business Profile is standing in for Google. Nothing reaches your real profile.';
+  }
   if (!config.oauthConfigured) {
     return 'Add your Google OAuth credentials, then connect your Business Profile.';
   }
@@ -80,31 +107,39 @@ function googleDescription(config: SetupConfig): string {
     case 'available':
       return 'Your Google account is linked and syncing reviews, posts and performance.';
     case 'auth_error':
-      return 'Google rejected the stored credentials. Reconnect the account to resume syncing.';
+      return 'Google rejected the saved sign-in. Reconnect the account to resume syncing.';
     case 'permission_error':
-      return 'The connected account does not manage this Business Profile.';
+      return 'Google is refusing access. Open the connection page to see what needs fixing.';
+    case 'rate_limited':
+      return 'Google is rate limiting requests right now. This is temporary and clears on its own.';
+    case 'error':
+      return 'Google returned an unexpected error. Check access again in a few minutes.';
+    case 'pending':
+      return 'Google account is connected. Waiting for Google to open Business Profile API access.';
     default:
-      return 'Google account is connected. Waiting for Business Profile API access approval.';
+      return 'Google account is connected. Access has not been verified yet — check it now.';
   }
 }
 
 export function buildSteps(config: SetupConfig): Step[] {
+  const google = googleStatus(config);
   return [
     {
       key: 'google',
       icon: <GoogleIcon size={18} />,
       title: 'Google Business Profile',
       description: googleDescription(config),
-      /*
-       * A linked account whose API access is still under review counts as done:
-       * there is no action left for the operator, and showing it as an
-       * outstanding task would misread a Google-side wait as a setup failure.
-       */
-      done: config.googleConfigured && config.gbpAccess !== 'auth_error',
-      status: googleStatus(config),
-      tone: config.oauthConfigured ? 'warning' : 'neutral',
+      done: isGoogleStepDone(config),
+      status: google.label,
+      tone: google.tone,
       href: '/dashboard/connection',
-      cta: config.oauthConfigured ? 'Connect Google' : 'View setup',
+      cta: !config.oauthConfigured
+        ? 'View setup'
+        : !config.googleConfigured
+          ? 'Connect Google'
+          : config.gbpAccess === 'auth_error'
+            ? 'Reconnect'
+            : 'Check connection',
     },
     {
       key: 'ai',
@@ -123,13 +158,23 @@ export function buildSteps(config: SetupConfig): Step[] {
       key: 'cron',
       icon: <AutomationIcon size={18} />,
       title: 'Scheduled automation',
-      description: config.cronConfigured
-        ? 'Daily jobs sync reviews, prepare drafts and publish scheduled posts.'
-        : 'Set CRON_SECRET so the scheduled jobs can run. They are rejected until you do.'
-        ,
-      done: config.cronConfigured,
-      status: config.cronConfigured ? 'Running' : 'Not configured',
-      tone: 'warning',
+      description: !config.cronConfigured
+        ? 'Set CRON_SECRET so the scheduled jobs can run. They are rejected until you do.'
+        : config.cronFailed
+          ? 'A scheduled job failed on its last run. Open Automation to see which one and why.'
+          : config.lastCronRunAt
+            ? 'Daily jobs sync reviews, prepare drafts and publish scheduled posts.'
+            : 'Protected and scheduled. The first daily run has not happened yet.',
+      // Configured is not the same as working: a failing job is not "done".
+      done: config.cronConfigured && !config.cronFailed,
+      status: !config.cronConfigured
+        ? 'Not configured'
+        : config.cronFailed
+          ? 'Last run failed'
+          : config.lastCronRunAt
+            ? 'Running'
+            : 'Waiting for first run',
+      tone: config.cronFailed ? 'danger' : 'warning',
       href: '/dashboard/automation',
       cta: 'View automation',
     },
@@ -137,13 +182,18 @@ export function buildSteps(config: SetupConfig): Step[] {
       key: 'storage',
       icon: <InboxIcon size={18} />,
       title: 'Persistent storage',
-      description: config.durableStore
-        ? 'Drafts, posts and the run history are stored durably.'
-        : 'Without a durable store, drafts and scheduled posts are lost when the server restarts.'
-        ,
-      done: config.durableStore,
-      status: config.durableStore ? 'Connected' : 'Not configured',
-      tone: 'warning',
+      description: !config.durableStore
+        ? 'Without a durable store, drafts and scheduled posts are lost when the server restarts.'
+        : config.storeReachable === false
+          ? 'The storage service is configured but did not respond. Check the Upstash credentials and status.'
+          : 'Drafts, posts and the run history are stored durably.',
+      done: config.durableStore && config.storeReachable !== false,
+      status: !config.durableStore
+        ? 'Not configured'
+        : config.storeReachable === false
+          ? 'Not responding'
+          : 'Connected',
+      tone: config.storeReachable === false ? 'danger' : 'warning',
       href: '/dashboard/settings',
       cta: 'How to fix',
     },
@@ -161,7 +211,7 @@ export function SetupChecklist({ config }: { config: SetupConfig }) {
         title={complete ? 'Setup complete' : 'Finish setting up'}
         description={
           complete
-            ? 'Everything is configured. Your profile is running on autopilot.'
+            ? 'Everything is configured and working. Your profile is running on autopilot.'
             : 'A few steps left before automation runs end to end.'
         }
         icon={complete ? <CheckIcon size={18} /> : <AutomationIcon size={18} />}

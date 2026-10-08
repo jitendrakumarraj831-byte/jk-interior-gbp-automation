@@ -10,6 +10,7 @@ import {
   CalendarIcon,
   CheckCircleIcon,
   CheckIcon,
+  InfoIcon,
   PlusIcon,
   RefreshIcon,
   SendIcon,
@@ -84,7 +85,7 @@ export default function ScheduledClient() {
       <PageHeader
         eyebrow="Content"
         title="Scheduled Posts"
-        description="Posts waiting to publish automatically, and anything that needs another look."
+        description="Posts waiting for the daily publishing run, and anything that needs another look."
         action={
           <>
             <Button
@@ -120,6 +121,16 @@ export default function ScheduledClient() {
 
       {loading && posts.length === 0 ? <SkeletonCard lines={4} /> : null}
 
+      <div className="mb-5">
+        <Callout tone="info" title="When scheduled posts go out" icon={<InfoIcon size={18} />}>
+          <p>
+            Scheduled posts are sent by a daily job at about <strong>9:00 am IST</strong> (03:30
+            UTC). A post set for later in the day goes out the next morning. Press{' '}
+            <strong>Publish now</strong> to send one immediately.
+          </p>
+        </Callout>
+      </div>
+
       <div className="space-y-5">
         <section>
           <SectionHeader
@@ -134,7 +145,7 @@ export default function ScheduledClient() {
               tone="info"
               compact
               title="Nothing scheduled"
-              description="Schedule a post and it publishes on its own — handy for festival greetings and limited-time offers you want to set up in advance."
+              description="Schedule a post and the daily job publishes it for you — handy for festival greetings and limited-time offers you want to set up in advance."
               action={
                 <ButtonLink href="/dashboard/posts" size="sm" icon={<PlusIcon size={15} />}>
                   Create a post
@@ -153,7 +164,7 @@ export default function ScheduledClient() {
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-ink-950">{post.title}</p>
                         <p className="mt-0.5 text-xs text-ink-500">
-                          Publishes {formatDateTime(post.scheduledFor)} ·{' '}
+                          Due {formatDateTime(post.scheduledFor)} ·{' '}
                           {relativeTime(post.scheduledFor)}
                         </p>
                       </div>
@@ -162,9 +173,14 @@ export default function ScheduledClient() {
                       Scheduled
                     </Badge>
                   </div>
-                  <p className="clamp-3 mt-3 text-[0.8125rem] leading-relaxed text-ink-600">
+                  <p className="clamp-3 wrap-any mt-3 text-[0.8125rem] leading-relaxed text-ink-600">
                     {post.description}
                   </p>
+                  {post.error ? (
+                    <p className="mt-2.5 rounded-lg bg-warning-50 px-2.5 py-2 text-xs leading-relaxed text-warning-700">
+                      {post.error}
+                    </p>
+                  ) : null}
                   <div className="mt-3.5 flex flex-wrap gap-2">
                     <Button
                       size="sm"

@@ -10,7 +10,7 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api, ApiError } from '@/lib/client';
+import { api, ApiError, relativeTime } from '@/lib/client';
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -21,15 +21,19 @@ import {
   ShieldIcon,
   SparkIcon,
 } from '@/components/icons';
+import { AccessServiceList, CheckAccessButton } from '@/components/gbp-access-panel';
 import {
   Badge,
   Button,
+  ButtonLink,
   Callout,
   Card,
   PageHeader,
   SectionHeader,
   SkeletonCard,
+  type Tone,
 } from '@/components/ui';
+import { ACCESS_LABEL, type GbpAccessSnapshot } from '@/lib/gbp-status';
 
 type Payload = {
   settings: {
@@ -53,10 +57,17 @@ type Payload = {
     autoPublishReplies: boolean;
     pinnedLocation: boolean;
     environment: string;
+    mockMode: boolean;
   };
   warnings: string[];
   business: { name: string; website: string; services: string[] };
-  gbpAccess: { status: string; message: string; checkedAt: string };
+  credential: {
+    connected: boolean;
+    source: 'stored' | 'environment' | null;
+    environmentTokenIgnored: boolean;
+  };
+  /** The shared access snapshot — the same one the dashboard and Connection page read. */
+  gbpAccess: GbpAccessSnapshot;
 };
 
 function Toggle({
@@ -119,16 +130,6 @@ function ConfigRow({ label, ready, note }: { label: string; ready: boolean; note
   );
 }
 
-const GBP_ACCESS_LABELS: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
-  available: { label: 'Approved', tone: 'success' },
-  pending: { label: 'Pending approval', tone: 'warning' },
-  rate_limited: { label: 'Rate limited', tone: 'warning' },
-  auth_error: { label: 'Authentication error', tone: 'danger' },
-  permission_error: { label: 'Permission error', tone: 'danger' },
-  error: { label: 'Error', tone: 'danger' },
-  unknown: { label: 'Not checked yet', tone: 'neutral' },
-};
-
 const PROVIDER_LABELS: Record<string, string> = {
   groq: 'Groq',
   gemini: 'Gemini',
@@ -179,6 +180,10 @@ export default function SettingsClient() {
     }
   }
 
+  /** True only when Google has actually answered (or mock mode stands in). */
+  const googleWorking =
+    payload?.config.mockMode === true || payload?.gbpAccess.status === 'available';
+
   async function signOut() {
     await api.post('/api/auth/logout').catch(() => undefined);
     router.replace('/login');
@@ -217,12 +222,15 @@ export default function SettingsClient() {
 
       {payload ? (
         <div className="space-y-5">
-          {payload.warnings.length > 0 ? (
+          {payload.warnings.length > 0 || !googleWorking ? (
             <Callout tone="warning" title="Still to set up" icon={<AlertIcon size={18} />}>
               <ul className="mt-1 list-disc space-y-1.5 pl-5">
                 {payload.warnings.map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
+                {!googleWorking && payload.config.googleConfigured ? (
+                  <li>{payload.gbpAccess.message}</li>
+                ) : null}
               </ul>
             </Callout>
           ) : (
@@ -250,9 +258,13 @@ export default function SettingsClient() {
               <Toggle
                 id="auto-publish"
                 label="Publish approved replies automatically"
-                description="Off by design. Turning this on lets scheduled jobs publish approved drafts without a final look from you."
-                checked={payload.settings.autoPublishReplies}
-                disabled={busy}
+                description={
+                  payload.config.autoPublishReplies
+                    ? 'Off by design. Turning this on lets scheduled jobs publish approved drafts without a final look from you.'
+                    : 'Locked off. AUTO_PUBLISH_REPLIES is false in the environment, so replies are only ever published when you press Publish. Set it to true in Vercel (and redeploy) to allow this switch.'
+                }
+                checked={payload.config.autoPublishReplies && payload.settings.autoPublishReplies}
+                disabled={busy || !payload.config.autoPublishReplies}
                 warn
                 onChange={(value) => void patch({ autoPublishReplies: value })}
               />
@@ -341,24 +353,35 @@ export default function SettingsClient() {
                 },
                 {
                   term: 'Google account',
-                  value: payload.config.googleConfigured ? 'Connected' : 'Not connected',
-                  tone: payload.config.googleConfigured ? ('success' as const) : ('neutral' as const),
+                  value: payload.config.googleConfigured
+                    ? payload.gbpAccess.status === 'auth_error'
+                      ? 'Reconnect needed'
+                      : 'Connected'
+                    : 'Not connected',
+                  tone: !payload.config.googleConfigured
+                    ? ('neutral' as const)
+                    : payload.gbpAccess.status === 'auth_error'
+                      ? ('danger' as const)
+                      : ('success' as const),
                 },
                 {
                   term: 'GBP API access',
-                  value: (GBP_ACCESS_LABELS[payload.gbpAccess.status] ?? GBP_ACCESS_LABELS.unknown!)
-                    .label,
-                  tone: (GBP_ACCESS_LABELS[payload.gbpAccess.status] ?? GBP_ACCESS_LABELS.unknown!)
-                    .tone,
+                  value: payload.config.googleConfigured
+                    ? ACCESS_LABEL[payload.gbpAccess.status].label
+                    : 'Not connected',
+                  tone: (payload.config.googleConfigured
+                    ? ACCESS_LABEL[payload.gbpAccess.status].tone
+                    : 'neutral') as Tone,
                 },
                 {
                   term: 'Location',
-                  value:
-                    payload.gbpAccess.status === 'available'
-                      ? payload.config.pinnedLocation
-                        ? 'Pinned by environment'
-                        : 'Auto-detected'
-                      : 'Waiting for API access',
+                  value: !googleWorking
+                    ? 'Waiting for API access'
+                    : payload.config.pinnedLocation
+                      ? 'Pinned by environment'
+                      : payload.settings.selectedLocation
+                        ? 'Chosen in dashboard'
+                        : 'Auto-detected',
                   tone: 'neutral' as const,
                 },
               ].map((row) => (
@@ -376,8 +399,41 @@ export default function SettingsClient() {
               ))}
             </dl>
             <p className="mt-3 border-t border-line pt-3 text-xs leading-relaxed text-ink-500">
-              {payload.gbpAccess.message}
+              {payload.config.googleConfigured ? payload.gbpAccess.message : 'No Google account is connected yet.'}
+              {payload.gbpAccess.lastSuccessAt
+                ? ` Last answered ${relativeTime(payload.gbpAccess.lastSuccessAt)}.`
+                : ''}
             </p>
+
+            {payload.config.googleConfigured ? (
+              <>
+                <div className="mt-4 border-t border-line pt-4">
+                  <AccessServiceList access={payload.gbpAccess} />
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <CheckAccessButton
+                    onChecked={(_, message) => {
+                      setError(null);
+                      setFlash(message);
+                      void load();
+                    }}
+                    onError={(message) => {
+                      setFlash(null);
+                      setError(message);
+                    }}
+                  />
+                  <ButtonLink href="/dashboard/connection" variant="ghost">
+                    Manage connection
+                  </ButtonLink>
+                </div>
+              </>
+            ) : (
+              <div className="mt-4">
+                <ButtonLink href="/dashboard/connection">
+                  {payload.config.oauthConfigured ? 'Connect Google' : 'View setup'}
+                </ButtonLink>
+              </div>
+            )}
           </Card>
 
           <Card>
@@ -395,9 +451,17 @@ export default function SettingsClient() {
                 note="OAuth client for the business.manage scope"
               />
               <ConfigRow
-                label="GOOGLE_REFRESH_TOKEN"
+                label="Google refresh token"
                 ready={payload.config.googleConfigured}
-                note="Long-lived credential for the connected profile"
+                note={
+                  payload.credential.source === 'stored'
+                    ? 'Saved by Connect Google (takes priority over GOOGLE_REFRESH_TOKEN)'
+                    : payload.credential.source === 'environment'
+                      ? 'From GOOGLE_REFRESH_TOKEN in the environment'
+                      : payload.credential.environmentTokenIgnored
+                        ? 'Disconnected — GOOGLE_REFRESH_TOKEN is set but ignored'
+                        : 'Saved by Connect Google, or set GOOGLE_REFRESH_TOKEN'
+                }
               />
               <ConfigRow
                 label="GROQ_API_KEY"

@@ -11,6 +11,7 @@ import { log } from '../logger';
 import { notify } from '../notifications';
 import { recordAudit } from '../audit';
 import { recordRun } from '../repository';
+import { withLock } from '../store';
 import { generateSocialContent } from './content-studio';
 import { computeContentHash, findDuplicate, findPublishedDuplicate } from './duplicate';
 import { publishSocialPostNow } from './publish';
@@ -27,20 +28,45 @@ import type { SocialPost } from './types';
 
 type TaskResult = Omit<AutomationRun, 'task' | 'startedAt' | 'finishedAt'>;
 
+/** Longer than any cron run (maxDuration is 60s); frees itself if a run crashes. */
+const TASK_LOCK_SECONDS = 5 * 60;
+
 async function runSocialTask(task: AutomationRunName, fn: () => Promise<TaskResult>): Promise<AutomationRun> {
   const startedAt = new Date().toISOString();
   let result: TaskResult;
 
-  try {
-    result = await fn();
-  } catch (error) {
+  // One run of each job at a time: a cron retry or a manual trigger overlapping
+  // a slow run must not publish the same post twice. The overlapping call
+  // returns a "skipped" run WITHOUT recording it, so it cannot overwrite the
+  // real run's result.
+  const locked = await withLock(`task:${task}`, TASK_LOCK_SECONDS, async (): Promise<TaskResult | Error> => {
+    try {
+      return await fn();
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  });
+
+  if (!locked.ran) {
+    return {
+      task,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      ok: true,
+      summary: 'Skipped — this job is already running.',
+      details: { status: 'skipped', reason: 'already_running' },
+    };
+  }
+
+  if (locked.value instanceof Error) {
+    const error = locked.value;
     const message = error instanceof AppError ? error.message : 'Unexpected failure while running the task.';
     if (!(error instanceof AppError)) {
-      log.error('social/tasks', `Task ${task} crashed`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      log.error('social/tasks', `Task ${task} crashed`, { error: error.message });
     }
     result = { ok: false, summary: message, details: { code: error instanceof AppError ? error.code : 'INTERNAL' } };
+  } else {
+    result = locked.value;
   }
 
   const run: AutomationRun = { task, startedAt, finishedAt: new Date().toISOString(), ...result };

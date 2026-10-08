@@ -85,7 +85,13 @@ async function loadTasks() {
   const systemHealth = await import('@/lib/system-health');
   const appError = (code: AppErrorCode, message: string, status = 503) =>
     new errors.AppError(code, message, status);
-  return { tasks, access, repository, security, systemHealth, appError };
+  /** Records "closed" results the way googleFetch would, for every API. */
+  const closeAllApis = async (code: AppErrorCode = 'GBP_QUOTA_EXCEEDED') => {
+    for (const service of ['accounts', 'locations', 'reviews', 'posts', 'performance'] as const) {
+      await access.recordServiceFailure(service, appError(code, 'closed'));
+    }
+  };
+  return { tasks, access, repository, security, systemHealth, appError, closeAllApis };
 }
 
 beforeEach(() => {
@@ -121,8 +127,8 @@ afterEach(() => {
 
 describe('1. GBP API access pending', () => {
   it('is skipped before any Google call, and is reported ok:true / skipped', async () => {
-    const { tasks, access } = await loadTasks();
-    await access.recordAccessFailure('GBP_QUOTA_EXCEEDED'); // -> status 'pending'
+    const { tasks, closeAllApis } = await loadTasks();
+    await closeAllApis(); // every API answered "quota 0" a moment ago
 
     const run = await tasks.syncReviews();
 
@@ -150,7 +156,9 @@ describe('2. GBP rate limit', () => {
     // into a skip) — only the RESULT is reclassified, not whether Google is called.
     expect(resolveTarget).toHaveBeenCalledTimes(1);
     expect(listReviews).toHaveBeenCalledTimes(1);
-    expect((await access.readAccess()).status).toBe('rate_limited');
+    // (The access state itself is recorded by googleFetch, covered in
+    // google-business.test.ts — this layer only reclassifies the run.)
+    void access;
   });
 
   it('the same classification applies to generateDrafts, publishScheduledPosts and syncPerformance', async () => {
@@ -243,8 +251,8 @@ describe('2. GBP rate limit', () => {
 
 describe('3. a skipped run never turns Automation / Cron red', () => {
   it('pending-skip reports healthy', async () => {
-    const { tasks, access, systemHealth } = await loadTasks();
-    await access.recordAccessFailure('GBP_QUOTA_EXCEEDED');
+    const { tasks, closeAllApis, systemHealth } = await loadTasks();
+    await closeAllApis();
     await tasks.syncReviews();
 
     const cron = (await systemHealth.buildSystemHealthReport()).checks.find((c) => c.id === 'cron');
@@ -463,8 +471,8 @@ describe('8. no retry loop', () => {
 
 describe('9. no unnecessary GBP API calls', () => {
   it('every GBP-dependent task skips before calling Google while access is pending', async () => {
-    const { tasks, access } = await loadTasks();
-    await access.recordAccessFailure('GBP_API_NOT_ENABLED');
+    const { tasks, closeAllApis } = await loadTasks();
+    await closeAllApis('GBP_QUOTA_EXCEEDED');
 
     await tasks.syncReviews();
     await tasks.generateDrafts();
@@ -475,5 +483,101 @@ describe('9. no unnecessary GBP API calls', () => {
     expect(listReviews).not.toHaveBeenCalled();
     expect(fetchPerformance).not.toHaveBeenCalled();
     expect(createLocalPost).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------ 10. duplicate execution -------------------------- */
+
+describe('10. overlapping runs of the same job', () => {
+  it('a second concurrent run is skipped, not executed, and does not overwrite the real run', async () => {
+    const { tasks, repository } = await loadTasks();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    listReviews.mockImplementation(async () => {
+      await gate;
+      return EMPTY_REVIEWS;
+    });
+
+    const first = tasks.syncReviews();
+    await new Promise((resolve) => setTimeout(resolve, 10)); // first holds the lock
+    const second = await tasks.syncReviews();
+    expect(second.ok).toBe(true);
+    expect(second.details).toMatchObject({ status: 'skipped', reason: 'already_running' });
+    expect(listReviews).toHaveBeenCalledTimes(1);
+
+    release();
+    const real = await first;
+    expect(real.summary).toMatch(/Synced/);
+    // The history holds the real run only — the skipped duplicate was not recorded.
+    const last = await repository.lastRunOf('sync-reviews');
+    expect(last?.summary).toMatch(/Synced/);
+  });
+
+  it('two cron invocations overlapping on a due post publish it exactly once', async () => {
+    const { tasks, repository } = await loadTasks();
+    await repository.savePost({
+      id: 'dup-1',
+      type: 'general',
+      title: 'Due once',
+      description: 'Published exactly one time.',
+      cta: { type: 'NONE' },
+      scheduledFor: '2020-01-01T00:00:00.000Z',
+      status: 'scheduled',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    });
+    createLocalPost.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve('accounts/1/locations/2/localPosts/1'), 20)),
+    );
+
+    await Promise.all([tasks.publishScheduledPosts(), tasks.publishScheduledPosts()]);
+
+    expect(createLocalPost).toHaveBeenCalledTimes(1);
+    expect((await repository.getPost('dup-1'))?.status).toBe('published');
+  });
+
+  it('a post stuck in "publishing" after a crash is marked failed with guidance, not silently re-sent', async () => {
+    const { tasks, repository } = await loadTasks();
+    const long = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { getStore, nsKey } = await import('@/lib/store');
+    await getStore().set(nsKey('post', 'stuck'), {
+      id: 'stuck',
+      type: 'general',
+      title: 'Interrupted',
+      description: 'The function died mid-publish.',
+      cta: { type: 'NONE' },
+      status: 'publishing',
+      createdAt: long,
+      updatedAt: long,
+    });
+    await tasks.publishScheduledPosts();
+    const post = await repository.getPost('stuck');
+    expect(post?.status).toBe('failed');
+    expect(post?.error).toMatch(/interrupted/i);
+    expect(createLocalPost).not.toHaveBeenCalled();
+  });
+
+  it('a temporary Google fault leaves the post scheduled for the next run, then fails it after 3 tries', async () => {
+    const { tasks, repository, appError } = await loadTasks();
+    await repository.savePost({
+      id: 'flaky',
+      type: 'general',
+      title: 'Flaky',
+      description: 'Google is having a bad day.',
+      cta: { type: 'NONE' },
+      scheduledFor: '2020-01-01T00:00:00.000Z',
+      status: 'scheduled',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    });
+    createLocalPost.mockRejectedValue(appError('GOOGLE_API_ERROR', 'Google had a temporary problem', 502));
+
+    await tasks.publishScheduledPosts();
+    expect((await repository.getPost('flaky'))?.status).toBe('scheduled');
+    await tasks.publishScheduledPosts();
+    expect((await repository.getPost('flaky'))?.status).toBe('scheduled');
+    const third = await tasks.publishScheduledPosts();
+    expect((await repository.getPost('flaky'))?.status).toBe('failed');
+    expect(third.ok).toBe(false);
   });
 });

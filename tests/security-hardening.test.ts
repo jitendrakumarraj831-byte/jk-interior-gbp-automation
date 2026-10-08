@@ -1,0 +1,412 @@
+/**
+ * Security: authentication on EVERY admin API, CSRF, sessions, the login
+ * limiter, cron authentication and redirect safety.
+ *
+ * The route-by-route check discovers routes from the file system, so a new
+ * admin endpoint added without authentication fails this test automatically.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mutableEnv = process.env as Record<string, string | undefined>;
+
+const ADMIN_PASSWORD = 'correct-horse-battery-staple';
+const SESSION_SECRET = 'session-secret-session-secret-session-secret';
+const CRON_SECRET = 'cron-secret-cron-secret-cron-secret-1234';
+
+function setEnforcedEnv() {
+  mutableEnv.ADMIN_PASSWORD = ADMIN_PASSWORD;
+  mutableEnv.SESSION_SECRET = SESSION_SECRET;
+  mutableEnv.CRON_SECRET = CRON_SECRET;
+  mutableEnv.GOOGLE_CLIENT_ID = 'client-id';
+  mutableEnv.GOOGLE_CLIENT_SECRET = 'client-secret';
+  mutableEnv.GOOGLE_REDIRECT_URI = 'https://example.test/api/auth/google/callback';
+  delete mutableEnv.UPSTASH_REDIS_REST_URL;
+  delete mutableEnv.UPSTASH_REDIS_REST_TOKEN;
+  delete mutableEnv.VERCEL_ENV;
+  mutableEnv.NODE_ENV = 'test';
+}
+
+beforeEach(() => {
+  setEnforcedEnv();
+  vi.resetModules();
+});
+
+afterEach(() => {
+  for (const key of ['ADMIN_PASSWORD', 'SESSION_SECRET', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI']) {
+    delete mutableEnv[key];
+  }
+});
+
+const ORIGIN = 'https://example.test';
+
+function request(
+  path: string,
+  init: { method?: string; cookie?: string; csrf?: string | null; origin?: string | null; body?: unknown; headers?: Record<string, string> } = {},
+) {
+  const headers = new Headers({
+    'x-forwarded-host': 'example.test',
+    'x-forwarded-proto': 'https',
+    ...(init.headers ?? {}),
+  });
+  if (init.cookie) headers.set('cookie', init.cookie);
+  if (init.origin !== null) headers.set('origin', init.origin ?? ORIGIN);
+  if (init.csrf) headers.set('x-csrf-token', init.csrf);
+  if (init.body !== undefined) headers.set('content-type', 'application/json');
+  return new Request(`${ORIGIN}${path}`, {
+    method: init.method ?? 'GET',
+    headers,
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+}
+
+async function session() {
+  const security = await import('@/lib/security');
+  const token = security.createSessionToken();
+  return { security, cookie: `jk_admin_session=${token}; jk_csrf=csrf-token-value`, csrf: 'csrf-token-value' };
+}
+
+/* --------------------- every admin route requires a session --------------- */
+
+const routeModules = import.meta.glob('../app/api/**/route.ts');
+
+/** Routes that are public or authenticate by some other mechanism, each tested below. */
+const NOT_SESSION_GATED = [
+  '/api/health', // deliberately public, secret-free
+  '/api/auth/login', // issues the session
+  '/api/auth/logout', // always succeeds
+  '/api/auth/google', // redirects to /login
+  '/api/auth/google/callback', // redirects to /login
+  '/api/auth/meta', // redirects to /login
+  '/api/auth/meta/callback', // redirects to /login
+];
+
+function routeOf(file: string): string {
+  return file.replace('../app', '').replace('/route.ts', '').replace(/\[(\w+)\]/g, 'x');
+}
+
+const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+describe('every admin API requires an authenticated session', () => {
+  const adminRoutes = Object.keys(routeModules).filter((file) => {
+    const route = routeOf(file);
+    return !NOT_SESSION_GATED.includes(route) && !route.startsWith('/api/cron/');
+  });
+
+  it('discovers a meaningful number of routes (guards against the glob silently matching nothing)', () => {
+    expect(adminRoutes.length).toBeGreaterThan(25);
+  });
+
+  for (const file of adminRoutes) {
+    it(`${routeOf(file)} rejects anonymous requests with 401 on every method`, async () => {
+      const mod = (await routeModules[file]!()) as Record<string, unknown>;
+      const exported = METHODS.filter((m) => typeof mod[m] === 'function');
+      expect(exported.length).toBeGreaterThan(0);
+      for (const method of exported) {
+        const handler = mod[method] as (r: Request, c: unknown) => Promise<Response>;
+        const response = await handler(
+          request(routeOf(file), { method, body: method === 'GET' || method === 'DELETE' ? undefined : {} }),
+          { params: Promise.resolve({ id: 'x' }) },
+        );
+        expect(response.status, `${method} ${routeOf(file)}`).toBe(401);
+        const text = await response.text();
+        expect(text).not.toContain('stack');
+      }
+    });
+  }
+
+  it('state-changing admin routes ALSO reject a valid session without a CSRF token', async () => {
+    const { cookie } = await session();
+    const mod = (await routeModules['../app/api/settings/route.ts']!()) as { PATCH: (r: Request) => Promise<Response> };
+    const response = await mod.PATCH(request('/api/settings', { method: 'PATCH', cookie, body: { autoGenerateDrafts: false } }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe('CSRF_FAILED');
+  });
+
+  it('…and reject a cross-origin request even with a valid session and token', async () => {
+    const { cookie, csrf } = await session();
+    const mod = (await routeModules['../app/api/settings/route.ts']!()) as { PATCH: (r: Request) => Promise<Response> };
+    const response = await mod.PATCH(
+      request('/api/settings', { method: 'PATCH', cookie, csrf, origin: 'https://evil.example', body: { autoGenerateDrafts: false } }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('…and reject a request with no Origin at all', async () => {
+    const { cookie, csrf } = await session();
+    const mod = (await routeModules['../app/api/settings/route.ts']!()) as { PATCH: (r: Request) => Promise<Response> };
+    const response = await mod.PATCH(
+      request('/api/settings', { method: 'PATCH', cookie, csrf, origin: null, body: { autoGenerateDrafts: false } }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('a properly authenticated, same-origin, tokened request is accepted', async () => {
+    const { cookie, csrf } = await session();
+    const mod = (await routeModules['../app/api/settings/route.ts']!()) as { PATCH: (r: Request) => Promise<Response> };
+    const response = await mod.PATCH(
+      request('/api/settings', { method: 'PATCH', cookie, csrf, body: { autoGenerateDrafts: false } }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it('a tampered, expired or foreign session cookie is rejected', async () => {
+    const { security, cookie } = await session();
+    const token = cookie.split(';')[0]!.split('=')[1]!;
+    const [subject, expires, nonce, signature] = token.split('.');
+    const forged = `${subject}.${Number(expires) + 99999}.${nonce}.${signature}`;
+    expect(security.verifySessionToken(token)).toBe(true);
+    expect(security.verifySessionToken(forged)).toBe(false);
+    expect(security.verifySessionToken(`${subject}.${Date.now() - 1000}.${nonce}.${signature}`)).toBe(false);
+    expect(security.verifySessionToken('garbage')).toBe(false);
+    expect(security.verifySessionToken('')).toBe(false);
+    expect(security.verifySessionToken(undefined)).toBe(false);
+  });
+});
+
+/* -------------------------------- sessions -------------------------------- */
+
+describe('sessions', () => {
+  it('rotating the admin password invalidates every existing session', async () => {
+    const { security } = await session();
+    const token = security.createSessionToken();
+    expect(security.verifySessionToken(token)).toBe(true);
+
+    mutableEnv.ADMIN_PASSWORD = 'a-brand-new-password-entirely';
+    vi.resetModules();
+    const rotated = await import('@/lib/security');
+    expect(rotated.verifySessionToken(token)).toBe(false);
+  });
+
+  it('rotating SESSION_SECRET invalidates every existing session', async () => {
+    const { security } = await session();
+    const token = security.createSessionToken();
+    mutableEnv.SESSION_SECRET = 'a-different-session-secret-entirely-1234';
+    vi.resetModules();
+    const rotated = await import('@/lib/security');
+    expect(rotated.verifySessionToken(token)).toBe(false);
+  });
+
+  it('cookies are httpOnly + SameSite=Lax, and Secure in production', async () => {
+    const security = await import('@/lib/security');
+    expect(security.sessionCookieOptions()).toMatchObject({ httpOnly: true, sameSite: 'lax', maxAge: 12 * 3600 });
+    expect(security.sessionCookieOptions().secure).toBe(false);
+
+    mutableEnv.VERCEL_ENV = 'production';
+    vi.resetModules();
+    const prod = await import('@/lib/security');
+    expect(prod.sessionCookieOptions()).toMatchObject({ httpOnly: true, sameSite: 'lax', secure: true });
+    // The CSRF cookie is the one deliberate exception: JS must read it back.
+    expect(prod.csrfCookieOptions().httpOnly).toBe(false);
+    expect(prod.csrfCookieOptions().secure).toBe(true);
+  });
+
+  it('login sets a session cookie but never echoes the password', async () => {
+    const mod = (await import('../app/api/auth/login/route')) as { POST: (r: Request) => Promise<Response> };
+    const response = await mod.POST(request('/api/auth/login', { method: 'POST', body: { password: ADMIN_PASSWORD } }));
+    expect(response.status).toBe(200);
+    const setCookie = response.headers.getSetCookie().join('\n');
+    expect(setCookie).toContain('jk_admin_session=');
+    expect(setCookie).toMatch(/HttpOnly/i);
+    expect(setCookie).toMatch(/SameSite=lax/i);
+    expect(await response.clone().text()).not.toContain(ADMIN_PASSWORD);
+  });
+
+  it('a wrong password is a 401 with no hint, and a cross-origin login is refused first', async () => {
+    const mod = (await import('../app/api/auth/login/route')) as { POST: (r: Request) => Promise<Response> };
+    const wrong = await mod.POST(request('/api/auth/login', { method: 'POST', body: { password: 'nope' } }));
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.getSetCookie()).toHaveLength(0);
+    const cross = await mod.POST(
+      request('/api/auth/login', { method: 'POST', origin: 'https://evil.example', body: { password: ADMIN_PASSWORD } }),
+    );
+    expect(cross.status).toBe(403);
+  });
+});
+
+/* ------------------------------ login limiter ----------------------------- */
+
+describe('login brute-force protection', () => {
+  const attempt = (mod: { POST: (r: Request) => Promise<Response> }, password: string, ip = '203.0.113.7') =>
+    mod.POST(request('/api/auth/login', { method: 'POST', body: { password }, headers: { 'x-forwarded-for': ip } }));
+
+  it('locks a client out after 8 attempts — even when they all arrive at once', async () => {
+    const mod = (await import('../app/api/auth/login/route')) as { POST: (r: Request) => Promise<Response> };
+    const responses = await Promise.all(Array.from({ length: 30 }, (_, i) => attempt(mod, `guess-${i}`)));
+    const statuses = responses.map((r) => r.status);
+    // Exactly the first 8 reach the password check; every other one is refused.
+    expect(statuses.filter((s) => s === 401)).toHaveLength(8);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(22);
+    // Even the RIGHT password is refused while locked out.
+    expect((await attempt(mod, ADMIN_PASSWORD)).status).toBe(429);
+  });
+
+  it('is per client — another address is unaffected', async () => {
+    const mod = (await import('../app/api/auth/login/route')) as { POST: (r: Request) => Promise<Response> };
+    for (let i = 0; i < 10; i += 1) await attempt(mod, 'bad', '198.51.100.1');
+    expect((await attempt(mod, ADMIN_PASSWORD, '198.51.100.2')).status).toBe(200);
+  });
+
+  it('a successful sign-in resets the counter', async () => {
+    const mod = (await import('../app/api/auth/login/route')) as { POST: (r: Request) => Promise<Response> };
+    for (let i = 0; i < 5; i += 1) await attempt(mod, 'bad');
+    expect((await attempt(mod, ADMIN_PASSWORD)).status).toBe(200);
+    for (let i = 0; i < 7; i += 1) expect((await attempt(mod, 'bad')).status).toBe(401);
+  });
+});
+
+/* ------------------------------- cron routes ------------------------------ */
+
+describe('cron endpoints', () => {
+  const cronFiles = Object.keys(routeModules).filter((f) => routeOf(f).startsWith('/api/cron/'));
+
+  it('finds every cron route', () => {
+    expect(cronFiles.length).toBeGreaterThanOrEqual(7);
+  });
+
+  for (const file of cronFiles) {
+    it(`${routeOf(file)} runs no work without the secret, on GET or POST`, async () => {
+      const mod = (await routeModules[file]!()) as Record<string, (r: Request) => Promise<Response>>;
+      for (const method of ['GET', 'POST'] as const) {
+        const none = await mod[method]!(request(routeOf(file), { method }));
+        expect(none.status).toBe(401);
+        const wrong = await mod[method]!(
+          request(routeOf(file), { method, headers: { authorization: 'Bearer not-the-secret' } }),
+        );
+        expect(wrong.status).toBe(401);
+        const wrongHeader = await mod[method]!(
+          request(routeOf(file), { method, headers: { 'x-cron-secret': 'not-the-secret' } }),
+        );
+        expect(wrongHeader.status).toBe(401);
+        // A session cookie is NOT a cron credential.
+        const { cookie } = await session();
+        const viaSession = await mod[method]!(request(routeOf(file), { method, cookie }));
+        expect(viaSession.status).toBe(401);
+      }
+    });
+  }
+
+  it('with CRON_SECRET unset every cron endpoint is disabled (503), never open', async () => {
+    delete mutableEnv.CRON_SECRET;
+    vi.resetModules();
+    const mod = (await routeModules['../app/api/cron/sync/route.ts']!()) as Record<string, (r: Request) => Promise<Response>>;
+    const response = await mod.GET!(request('/api/cron/sync', { headers: { authorization: 'Bearer ' } }));
+    expect(response.status).toBe(503);
+  });
+
+  it('the secret is compared in constant time and accepted in the Vercel Cron format', async () => {
+    const { assertCronAuthorized } = await import('@/lib/security');
+    expect(() =>
+      assertCronAuthorized(request('/api/cron/x', { headers: { authorization: `Bearer ${CRON_SECRET}` } })),
+    ).not.toThrow();
+    expect(() =>
+      assertCronAuthorized(request('/api/cron/x', { headers: { 'x-cron-secret': CRON_SECRET } })),
+    ).not.toThrow();
+    expect(() =>
+      assertCronAuthorized(request('/api/cron/x', { headers: { authorization: `Bearer ${CRON_SECRET}x` } })),
+    ).toThrow();
+  });
+});
+
+/* ---------------------------- OAuth flow safety --------------------------- */
+
+describe('OAuth flow', () => {
+  it('state is bound to the browser: a missing, mismatched or expired state is refused', async () => {
+    const { createOAuthState, verifyOAuthState } = await import('@/lib/security');
+    const state = createOAuthState();
+    expect(verifyOAuthState(state, state)).toBe(true);
+    expect(verifyOAuthState(state, undefined)).toBe(false);
+    expect(verifyOAuthState(null, state)).toBe(false);
+    expect(verifyOAuthState(state, createOAuthState())).toBe(false);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 11 * 60 * 1000);
+    expect(verifyOAuthState(state, state)).toBe(false); // older than 10 minutes
+    vi.useRealTimers();
+  });
+
+  it('the callback refuses a signed-out browser and never stores a token for it', async () => {
+    const mod = (await import('../app/api/auth/google/callback/route')) as { GET: (r: Request) => Promise<Response> };
+    const response = await mod.GET(request('/api/auth/google/callback?code=abc&state=xyz', { cookie: 'jk_oauth_state=xyz' }));
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toContain('/login');
+  });
+
+  it('the callback with a valid session but a wrong state is refused without exchanging the code', async () => {
+    const { cookie } = await session();
+    const mod = (await import('../app/api/auth/google/callback/route')) as { GET: (r: Request) => Promise<Response> };
+    const response = await mod.GET(
+      request('/api/auth/google/callback?code=abc&state=attacker', { cookie: `${cookie}; jk_oauth_state=real-state` }),
+    );
+    expect(response.status).toBe(307);
+    const location = new URL(response.headers.get('location')!);
+    expect(location.pathname).toBe('/dashboard/connection');
+    expect(location.searchParams.get('connect')).toBe('error');
+  });
+
+  it('the callback never puts a token or raw error text in the redirect', async () => {
+    const { cookie } = await session();
+    const security = await import('@/lib/security');
+    const state = security.createOAuthState();
+    vi.doMock('@/lib/google-auth', () => ({
+      exchangeCodeForTokens: async () => {
+        throw new Error('internal: refresh_token=1//0gSECRETSECRETSECRETSECRET');
+      },
+    }));
+    vi.resetModules();
+    const mod = (await import('../app/api/auth/google/callback/route')) as { GET: (r: Request) => Promise<Response> };
+    const response = await mod.GET(
+      request(`/api/auth/google/callback?code=abc&state=${state}`, { cookie: `${cookie}; jk_oauth_state=${state}` }),
+    );
+    try {
+      const location = new URL(response.headers.get('location')!);
+      expect(location.toString()).not.toContain('SECRET');
+      expect(location.searchParams.get('reason')).toBe('Could not complete the Google connection.');
+    } finally {
+      vi.doUnmock('@/lib/google-auth');
+    }
+  });
+});
+
+/* --------------------------------- redirects ------------------------------ */
+
+describe('post-login redirect', () => {
+  it('accepts same-origin paths only — including the backslash trick', async () => {
+    const { safeNextPath } = await import('@/lib/redirect');
+    expect(safeNextPath('/dashboard/reviews')).toBe('/dashboard/reviews');
+    expect(safeNextPath('/dashboard?tab=1#x')).toBe('/dashboard?tab=1#x');
+    for (const bad of [
+      '//evil.example',
+      '/\\evil.example',
+      '/\\/evil.example',
+      'https://evil.example',
+      'javascript:alert(1)',
+      'dashboard',
+      '/dash\nboard',
+      '',
+      null,
+      undefined,
+    ]) {
+      expect(safeNextPath(bad as string | null | undefined), String(bad)).toBe('/dashboard');
+    }
+  });
+});
+
+/* ---------------------------------- health -------------------------------- */
+
+describe('/api/health', () => {
+  it('is public and leaks no secret, token, email or resource name', async () => {
+    mutableEnv.GOOGLE_REFRESH_TOKEN = '1//0g-env-refresh-token-value-abcdefghij';
+    mutableEnv.GROQ_API_KEY = 'gsk_supersecretgroqkeyvalue1234567890';
+    vi.resetModules();
+    const mod = (await import('../app/api/health/route')) as { GET: () => Promise<Response> };
+    const text = await (await mod.GET()).text();
+    for (const secret of [ADMIN_PASSWORD, SESSION_SECRET, CRON_SECRET, 'client-secret', 'env-refresh-token', 'gsk_supersecret']) {
+      expect(text).not.toContain(secret);
+    }
+    expect(text).not.toMatch(/@/); // no email addresses
+    expect(text).not.toMatch(/accounts\/\d|locations\/\d/);
+    delete mutableEnv.GOOGLE_REFRESH_TOKEN;
+    delete mutableEnv.GROQ_API_KEY;
+  });
+});
