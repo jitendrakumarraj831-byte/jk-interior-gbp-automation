@@ -33,7 +33,7 @@ import {
   SkeletonCard,
   type Tone,
 } from '@/components/ui';
-import { ACCESS_LABEL, type GbpAccessSnapshot } from '@/lib/gbp-status';
+import { accessLabel, type GbpAccessSnapshot } from '@/lib/gbp-status';
 
 type Payload = {
   settings: {
@@ -107,7 +107,7 @@ function Toggle({
         }`}
       >
         <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-xs transition-transform duration-200 ${
+          className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow-xs transition-transform duration-200 ${
             checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5'
           }`}
         />
@@ -142,7 +142,9 @@ export default function SettingsClient() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ title: string; text: string; tone: 'success' | 'warning' } | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     try {
@@ -171,7 +173,7 @@ export default function SettingsClient() {
     setFlash(null);
     try {
       const response = await api.patch<{ settings: Payload['settings'] }>('/api/settings', update);
-      setFlash(response.message);
+      setFlash({ title: 'Saved', text: response.message, tone: 'success' });
       await load();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not save that change.');
@@ -183,6 +185,10 @@ export default function SettingsClient() {
   /** True only when Google has actually answered (or mock mode stands in). */
   const googleWorking =
     payload?.config.mockMode === true || payload?.gbpAccess.status === 'available';
+  /** Working AND nothing failing — one healthy API must not hide a broken one. */
+  const googleHealthy =
+    payload?.config.mockMode === true ||
+    (payload?.gbpAccess.status === 'available' && payload.gbpAccess.degraded.length === 0);
 
   async function signOut() {
     await api.post('/api/auth/logout').catch(() => undefined);
@@ -212,8 +218,12 @@ export default function SettingsClient() {
       ) : null}
       {flash ? (
         <div className="mb-4">
-          <Callout tone="success" title="Saved" icon={<CheckCircleIcon size={18} />}>
-            <p>{flash}</p>
+          <Callout
+            tone={flash.tone}
+            title={flash.title}
+            icon={flash.tone === 'success' ? <CheckCircleIcon size={18} /> : <AlertIcon size={18} />}
+          >
+            <p>{flash.text}</p>
           </Callout>
         </div>
       ) : null}
@@ -222,13 +232,13 @@ export default function SettingsClient() {
 
       {payload ? (
         <div className="space-y-5">
-          {payload.warnings.length > 0 || !googleWorking ? (
+          {payload.warnings.length > 0 || !googleHealthy ? (
             <Callout tone="warning" title="Still to set up" icon={<AlertIcon size={18} />}>
               <ul className="mt-1 list-disc space-y-1.5 pl-5">
                 {payload.warnings.map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
-                {!googleWorking && payload.config.googleConfigured ? (
+                {!googleHealthy && payload.config.googleConfigured ? (
                   <li>{payload.gbpAccess.message}</li>
                 ) : null}
               </ul>
@@ -367,10 +377,10 @@ export default function SettingsClient() {
                 {
                   term: 'GBP API access',
                   value: payload.config.googleConfigured
-                    ? ACCESS_LABEL[payload.gbpAccess.status].label
+                    ? accessLabel(payload.gbpAccess).label
                     : 'Not connected',
                   tone: (payload.config.googleConfigured
-                    ? ACCESS_LABEL[payload.gbpAccess.status].tone
+                    ? accessLabel(payload.gbpAccess).tone
                     : 'neutral') as Tone,
                 },
                 {
@@ -412,9 +422,14 @@ export default function SettingsClient() {
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <CheckAccessButton
-                    onChecked={(_, message) => {
+                    onChecked={(access, message) => {
                       setError(null);
-                      setFlash(message);
+                      const healthy = access.status === 'available' && access.degraded.length === 0;
+                      setFlash({
+                        title: healthy ? 'All good' : 'Checked',
+                        text: message,
+                        tone: healthy ? 'success' : 'warning',
+                      });
                       void load();
                     }}
                     onError={(message) => {

@@ -194,13 +194,39 @@ describe('OAuth connected, Performance API live, an older "pending" still stored
     expect(all.health).toBe('available');
     expect(all.systemHealth).toBe('healthy');
 
-    expect(all.summary.connection.label).toBe('Connected & Active');
+    // Access is proven, so the dashboard is connected and never says "pending"…
     expect(all.summary.connection.connected).toBe(true);
     expect(JSON.stringify(all.summary.connection)).not.toMatch(/pending/i);
-    // The part that is genuinely not open yet is mentioned, not hidden.
+    // …but two APIs genuinely are not open, so it must not read plain green
+    // either: the part that is not working is named, not hidden.
+    expect(all.summary.connection.label).toBe('Partly working');
     expect(all.summary.access.degraded.map((s: { service: string }) => s.service)).toEqual(
       expect.arrayContaining(['accounts', 'locations']),
     );
+    expect(all.summary.connection.detail).toMatch(/Accounts and Locations/);
+  });
+
+  it('with every API answering, every screen is plain "Connected & Active" and setup is complete', async () => {
+    const app = await loadAll();
+    await stalePending(app); // an old pending must not matter once Google answers
+    const all = await everySurface(app);
+
+    expect(all.summary.access.degraded).toEqual([]);
+    expect(all.summary.connection.label).toBe('Connected & Active');
+    expect(all.summary.connection.detail).toBe('Connected and active — Google is answering Business Profile requests.');
+
+    const { buildSteps } = await app.checklist();
+    const steps = buildSteps({
+      ...all.settingsData.config,
+      gbpAccess: all.summary.access.status,
+      gbpDegraded: all.summary.access.degraded.map((s: { service: string }) => s.service),
+      storeReachable: true,
+      durableStore: true,
+      lastCronRunAt: new Date().toISOString(),
+      cronFailed: false,
+    });
+    expect(steps.find((s) => s.key === 'google')).toMatchObject({ done: true, status: 'Connected & Active' });
+    expect(steps.every((s) => s.done)).toBe(true);
   });
 
   it('the state is durable: a brand-new instance (cold start) still reads AVAILABLE', async () => {
@@ -221,23 +247,26 @@ describe('OAuth connected, Performance API live, an older "pending" still stored
     expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
   });
 
-  it('the setup checklist counts Google as DONE, and is complete only when everything is', async () => {
+  it('the setup checklist is NOT complete while an API is failing, even though access is proven', async () => {
     const app = await loadAll();
     await stalePending(app);
+    google.accounts = zeroQuota;
+    google.locations = zeroQuota;
     const all = await everySurface(app);
     const { buildSteps } = await app.checklist();
 
     const config = {
       ...all.settingsData.config,
       gbpAccess: all.summary.access.status,
+      gbpDegraded: all.summary.access.degraded.map((s: { service: string }) => s.service),
       storeReachable: true, // (memory store in tests)
       durableStore: true,
       lastCronRunAt: new Date().toISOString(),
       cronFailed: false,
     };
     const steps = buildSteps(config);
-    expect(steps.find((s) => s.key === 'google')).toMatchObject({ done: true, status: 'Connected & Active' });
-    expect(steps.every((s) => s.done)).toBe(true);
+    expect(steps.find((s) => s.key === 'google')).toMatchObject({ done: false, status: 'Partly working' });
+    expect(steps.filter((s) => s.done)).toHaveLength(3);
   });
 
   it('live reviews and performance are labelled live (google), with real numbers', async () => {

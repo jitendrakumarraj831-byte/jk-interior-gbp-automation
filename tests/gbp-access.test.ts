@@ -142,6 +142,57 @@ describe('classifyGoogleError', () => {
     expect(errors.isApprovalPending(error.code)).toBe(false);
   });
 
+  it('403 SERVICE_DISABLED names the exact API Google says is switched off', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, {
+      error: {
+        status: 'PERMISSION_DENIED',
+        message: 'Google My Business API has not been used in project 123456 before or it is disabled.',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+            reason: 'SERVICE_DISABLED',
+            metadata: { service: 'mybusiness.googleapis.com', consumer: 'projects/123456' },
+          },
+        ],
+      },
+    });
+    expect(error.code).toBe('GBP_API_NOT_ENABLED');
+    expect(error.message).toContain('Google My Business API');
+    expect(error.message).toContain('mybusiness.googleapis.com');
+    // The project number is Google's detail, not ours to repeat on screen.
+    expect(error.message).not.toContain('123456');
+  });
+
+  it('reads the disabled API from the activation URL when the details carry none', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, {
+      error: {
+        status: 'PERMISSION_DENIED',
+        message:
+          'API has not been used in project 123456 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/mybusinessaccountmanagement.googleapis.com/overview?project=123456 then retry.',
+        details: [{ reason: 'SERVICE_DISABLED' }],
+      },
+    });
+    expect(error.code).toBe('GBP_API_NOT_ENABLED');
+    expect(error.message).toContain('My Business Account Management API');
+    expect(error.message).not.toContain('123456');
+  });
+
+  it('never echoes a malformed service value from the payload', async () => {
+    const { errors } = await loadErrors();
+    const error = errors.classifyGoogleError(403, {
+      error: {
+        status: 'PERMISSION_DENIED',
+        message: 'API has not been used in project 1 before or it is disabled.',
+        details: [{ reason: 'SERVICE_DISABLED', metadata: { service: 'evil <b>x</b>.example.com' } }],
+      },
+    });
+    expect(error.code).toBe('GBP_API_NOT_ENABLED');
+    expect(error.message).not.toMatch(/evil|<b>/);
+    expect(error.message).toMatch(/switched off/);
+  });
+
   it('403 insufficient scope asks the owner to reconnect', async () => {
     const { errors } = await loadErrors();
     const error = errors.classifyGoogleError(403, {
@@ -494,5 +545,52 @@ describe('cron failure classification', () => {
     const gated = tasks.match(/shouldSkipGbpWork\('/g)?.length ?? 0;
     // sync-reviews, generate-drafts, publish-posts, sync-performance
     expect(gated).toBeGreaterThanOrEqual(4);
+  });
+});
+
+
+/* ---------------------------------------------------------------------------
+ * Access proven, but one API is failing
+ * ------------------------------------------------------------------------- */
+
+describe('partly working access', () => {
+  const at = '2026-10-08T01:00:00.000Z';
+  const ok = (service: 'accounts' | 'locations' | 'performance') => ({
+    service,
+    status: 'available' as const,
+    checkedAt: at,
+    lastSuccessAt: at,
+  });
+  const reviewsOff = {
+    service: 'reviews' as const,
+    status: 'permission_error' as const,
+    checkedAt: at,
+    lastCode: 'GBP_API_NOT_ENABLED' as const,
+  };
+
+  it('stays available, but the message says which API is not working and why', async () => {
+    const status = await import('@/lib/gbp-status');
+    const snapshot = status.deriveSnapshot([ok('accounts'), ok('performance'), reviewsOff], null);
+    expect(snapshot.status).toBe('available');
+    expect(snapshot.degraded.map((s) => s.service)).toEqual(['reviews']);
+    expect(snapshot.message).toMatch(/Reviews is not working/);
+    expect(snapshot.message).toMatch(/switched off/);
+  });
+
+  it('is never plain green while an API is failing, and never amber when nothing is', async () => {
+    const status = await import('@/lib/gbp-status');
+    const partly = status.deriveSnapshot([ok('accounts'), reviewsOff], null);
+    expect(status.accessLabel(partly)).toEqual({ label: 'Partly working', tone: 'warning' });
+
+    const healthy = status.deriveSnapshot([ok('accounts'), ok('performance')], null);
+    expect(healthy.degraded).toEqual([]);
+    expect(status.accessLabel(healthy)).toEqual({ label: 'Connected & Active', tone: 'success' });
+    expect(healthy.message).toBe(status.describeAccess('available'));
+  });
+
+  it('tells the owner exactly which Google Cloud API to enable', async () => {
+    const { serviceHint } = await import('@/components/gbp-access-panel');
+    expect(serviceHint(reviewsOff)).toMatch(/Google My Business API.*mybusiness\.googleapis\.com/);
+    expect(serviceHint(ok('accounts'))).toBeNull();
   });
 });

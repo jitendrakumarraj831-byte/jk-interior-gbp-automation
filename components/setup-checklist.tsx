@@ -27,6 +27,8 @@ export type SetupConfig = {
    * unknown | available | pending | rate_limited | auth_error | permission_error | error.
    */
   gbpAccess?: string;
+  /** Business Profile APIs that are not working even though access is proven (e.g. "reviews"). */
+  gbpDegraded?: string[];
   /** Mock Business Profile (development/preview only) stands in for Google. */
   mockMode?: boolean;
   /** False when the store is configured but did not answer a round trip. */
@@ -68,7 +70,25 @@ function describeProviders(config: SetupConfig): string {
 /** True only when Google has actually answered — never on a guess. */
 export function isGoogleStepDone(config: SetupConfig): boolean {
   if (config.mockMode) return true;
-  return config.googleConfigured && config.gbpAccess === 'available';
+  // One working API proves the account is linked, not that everything works:
+  // a failing Reviews or Posts API means setup is not complete.
+  return (
+    config.googleConfigured &&
+    config.gbpAccess === 'available' &&
+    (config.gbpDegraded?.length ?? 0) === 0
+  );
+}
+
+const SERVICE_NAMES: Record<string, string> = {
+  accounts: 'Accounts',
+  locations: 'Locations',
+  reviews: 'Reviews',
+  posts: 'Posts',
+  performance: 'Performance',
+};
+
+function degradedNames(config: SetupConfig): string {
+  return (config.gbpDegraded ?? []).map((name) => SERVICE_NAMES[name] ?? name).join(', ');
 }
 
 function googleStatus(config: SetupConfig): { label: string; tone: Tone } {
@@ -77,7 +97,9 @@ function googleStatus(config: SetupConfig): { label: string; tone: Tone } {
   if (!config.googleConfigured) return { label: 'Not connected', tone: 'warning' };
   switch (config.gbpAccess) {
     case 'available':
-      return { label: 'Connected & Active', tone: 'success' };
+      return (config.gbpDegraded?.length ?? 0) > 0
+        ? { label: 'Partly working', tone: 'warning' }
+        : { label: 'Connected & Active', tone: 'success' };
     case 'auth_error':
       return { label: 'Reconnect needed', tone: 'danger' };
     case 'permission_error':
@@ -105,7 +127,11 @@ function googleDescription(config: SetupConfig): string {
   }
   switch (config.gbpAccess) {
     case 'available':
-      return 'Your Google account is linked and syncing reviews, posts and performance.';
+      return (config.gbpDegraded?.length ?? 0) > 0
+        ? `Your Google account is linked, but ${degradedNames(config)} ${
+            config.gbpDegraded!.length === 1 ? 'is' : 'are'
+          } not working yet. Open the connection page to see what to fix.`
+        : 'Your Google account is linked and syncing reviews, posts and performance.';
     case 'auth_error':
       return 'Google rejected the saved sign-in. Reconnect the account to resume syncing.';
     case 'permission_error':

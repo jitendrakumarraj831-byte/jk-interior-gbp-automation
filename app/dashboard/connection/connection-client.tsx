@@ -25,7 +25,7 @@ import {
   SettingsIcon,
   ShieldIcon,
 } from '@/components/icons';
-import { AccessServiceList, CheckAccessButton } from '@/components/gbp-access-panel';
+import { AccessServiceList, CheckAccessButton, DegradedNotice } from '@/components/gbp-access-panel';
 import {
   Badge,
   Button,
@@ -39,7 +39,7 @@ import {
   StatusPill,
   type Tone,
 } from '@/components/ui';
-import { ACCESS_LABEL } from '@/lib/gbp-status';
+import { accessLabel } from '@/lib/gbp-status';
 import type { ConnectionState } from '@/lib/types';
 
 type SettingsPayload = {
@@ -105,7 +105,9 @@ export default function ConnectionClient({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ title: string; text: string; tone: 'success' | 'warning' } | null>(
+    null,
+  );
   const [callback, setCallback] = useState<{
     result: string | null;
     reason: string | null;
@@ -159,7 +161,7 @@ export default function ConnectionClient({
     try {
       await api.patch('/api/settings', { [kind]: value });
       await load();
-      setFlash('Selection saved.');
+      setFlash({ title: 'Done', text: 'Selection saved.', tone: 'success' });
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not save that selection.');
     } finally {
@@ -182,7 +184,7 @@ export default function ConnectionClient({
     setCallback({ result: null, reason: null, account: null });
     try {
       const response = await api.post<{ disconnected: boolean }>('/api/auth/google/disconnect');
-      setFlash(response.message);
+      setFlash({ title: 'Done', text: response.message, tone: 'success' });
       await load();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not disconnect.');
@@ -194,6 +196,8 @@ export default function ConnectionClient({
   const oauthReady = settings?.config.oauthConfigured ?? false;
   const connState = state ? resolveState(state, oauthReady) : 'not_connected';
   const meta = STATE_META[connState];
+  /** Access is proven, but some API is failing — never show that as plain green. */
+  const partlyWorking = connState === 'connected' && (state?.access.degraded.length ?? 0) > 0;
   const selectedLocation = state?.locations.find((l) => l.name === state.selectedLocation);
   const locationLabel =
     selectedLocation?.title ??
@@ -247,8 +251,12 @@ export default function ConnectionClient({
       ) : null}
       {flash ? (
         <div className="mb-4">
-          <Callout tone="success" title="Done" icon={<CheckCircleIcon size={18} />}>
-            <p>{flash}</p>
+          <Callout
+            tone={flash.tone}
+            title={flash.title}
+            icon={flash.tone === 'success' ? <CheckCircleIcon size={18} /> : <AlertIcon size={18} />}
+          >
+            <p>{flash.text}</p>
           </Callout>
         </div>
       ) : null}
@@ -305,8 +313,11 @@ export default function ConnectionClient({
                         Business Profile API
                       </dt>
                       <dd className="mt-1">
-                        <StatusPill tone={meta.tone} pulse={connState === 'connected'}>
-                          {meta.label}
+                        <StatusPill
+                          tone={partlyWorking ? 'warning' : meta.tone}
+                          pulse={connState === 'connected' && !partlyWorking}
+                        >
+                          {partlyWorking ? accessLabel(state.access).label : meta.label}
                         </StatusPill>
                       </dd>
                     </div>
@@ -323,9 +334,14 @@ export default function ConnectionClient({
                   <CheckAccessButton
                     variant={connState === 'connected' ? 'secondary' : 'primary'}
                     className="flex-1 sm:flex-none"
-                    onChecked={(_, message) => {
+                    onChecked={(access, message) => {
                       setError(null);
-                      setFlash(message);
+                      const healthy = access.status === 'available' && access.degraded.length === 0;
+                      setFlash({
+                        title: healthy ? 'Done' : 'Checked',
+                        text: message,
+                        tone: healthy ? 'success' : 'warning',
+                      });
                       setCallback({ result: null, reason: null, account: null });
                       void load();
                     }}
@@ -378,6 +394,12 @@ export default function ConnectionClient({
                     <strong>Check access now</strong>.
                   </p>
                 </Callout>
+              </div>
+            ) : null}
+
+            {partlyWorking && state ? (
+              <div className="mt-4">
+                <DegradedNotice access={state.access} />
               </div>
             ) : null}
 
@@ -461,8 +483,8 @@ export default function ConnectionClient({
                 icon={<ShieldIcon size={18} />}
                 tone="google"
                 action={
-                  <Badge tone={ACCESS_LABEL[state.apiAccess].tone as Tone} dot>
-                    {ACCESS_LABEL[state.apiAccess].label}
+                  <Badge tone={accessLabel(state.access).tone as Tone} dot>
+                    {accessLabel(state.access).label}
                   </Badge>
                 }
               />

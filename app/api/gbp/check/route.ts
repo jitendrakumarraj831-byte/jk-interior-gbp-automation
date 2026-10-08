@@ -20,19 +20,19 @@ export async function POST(request: Request) {
   return handleRoute('gbp/check', async () => {
     assertAdmin(request);
     const access = await checkGbpAccess({ manual: true });
+    // "Active" only when every API answered. One working API proves the account
+    // is connected, but it must not paper over a Reviews or Posts API that is not.
+    const healthy = access.status === 'available' && access.degraded.length === 0;
     await recordAudit({
       actor: actorFromRequest(request),
       action: 'google_access_checked',
       resource: 'gbp-access',
-      status: access.status === 'available' ? 'success' : 'failure',
+      status: healthy ? 'success' : 'failure',
       source: 'dashboard',
-      detail: access.status,
+      detail: access.degraded.length > 0
+        ? `${access.status}; not working: ${access.degraded.map((s) => s.service).join(', ')}`
+        : access.status,
     });
-    return ok(
-      { access },
-      access.status === 'available'
-        ? 'Business Profile API access is active.'
-        : access.message,
-    );
+    return ok({ access }, healthy ? 'Business Profile API access is active.' : access.message);
   });
 }
