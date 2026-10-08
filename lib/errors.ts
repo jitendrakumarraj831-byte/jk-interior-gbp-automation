@@ -1,5 +1,7 @@
 /** Error taxonomy shared by the Google client, the API routes and the UI. */
 
+import { GOOGLE_API_TITLES } from './gbp-status';
+
 export type AppErrorCode =
   | 'OAUTH_NOT_CONFIGURED'
   | 'NOT_CONNECTED'
@@ -58,7 +60,34 @@ type GoogleErrorInfo = {
   message: string;
   /** Google's quota_limit_value, when the body carries one. "0" means no access yet. */
   quotaLimitValue?: string;
+  /** For a disabled API: its service id, e.g. "mybusiness.googleapis.com". Validated. */
+  service?: string;
 };
+
+/** Only a bare Google API host is ever kept — never free text from the payload. */
+const GOOGLE_SERVICE_ID = /^[a-z][a-z0-9-]*\.googleapis\.com$/;
+
+/** The service id Google names in a disabled-API error, when it is a well-formed one. */
+function disabledServiceOf(
+  details: { metadata?: Record<string, unknown> }[],
+  message: string,
+): string | undefined {
+  for (const detail of details) {
+    const candidate = detail?.metadata?.service;
+    if (typeof candidate === 'string' && GOOGLE_SERVICE_ID.test(candidate.toLowerCase())) {
+      return candidate.toLowerCase();
+    }
+  }
+  // The human message carries the activation URL, which contains the same id.
+  const fromMessage = /\/apis\/api\/([a-z][a-z0-9-]*\.googleapis\.com)\b/.exec(message);
+  return fromMessage?.[1];
+}
+
+/** "Google My Business API (mybusiness.googleapis.com)" — what to search for in the Library. */
+function describeService(service: string): string {
+  const title = GOOGLE_API_TITLES[service];
+  return title ? `${title} (${service})` : service;
+}
 
 function inspectGoogleError(body: unknown): GoogleErrorInfo {
   if (typeof body === 'string') return { reasons: [], message: body.toLowerCase() };
@@ -85,10 +114,12 @@ function inspectGoogleError(body: unknown): GoogleErrorInfo {
     if (typeof limit === 'string' || typeof limit === 'number') quotaLimitValue = String(limit);
   }
 
+  const message = typeof error.message === 'string' ? error.message.toLowerCase() : '';
   return {
     reasons,
-    message: typeof error.message === 'string' ? error.message.toLowerCase() : '',
+    message,
     quotaLimitValue,
+    service: disabledServiceOf(error.details ?? [], message),
   };
 }
 
@@ -172,8 +203,11 @@ export function classifyGoogleError(httpStatus: number, body: unknown): AppError
     ) {
       return new AppError(
         'GBP_API_NOT_ENABLED',
-        'The Business Profile APIs are switched off for this Google Cloud project. Enable them in Google Cloud Console (APIs & Services → Library), then check access again.',
+        info.service
+          ? `The ${describeService(info.service)} is switched off for this Google Cloud project. Enable it in Google Cloud Console (APIs & Services → Library), then check access again.`
+          : 'A Business Profile API is switched off for this Google Cloud project. Enable it in Google Cloud Console (APIs & Services → Library), then check access again.',
         503,
+        info.service,
       );
     }
 

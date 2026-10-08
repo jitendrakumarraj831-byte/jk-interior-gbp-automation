@@ -30,6 +30,15 @@ describe('Google step', () => {
     }
   });
 
+  it('is NOT done while access is proven but one API is failing', () => {
+    const partial: SetupConfig = { ...READY, gbpDegraded: ['reviews'] };
+    expect(isGoogleStepDone(partial)).toBe(false);
+    expect(step(partial, 'google')).toMatchObject({ done: false, status: 'Partly working' });
+    expect(step(partial, 'google').description).toMatch(/Reviews is not working/);
+    // "Setup complete" must not appear while Reviews is down.
+    expect(done(partial)).toBe(3);
+  });
+
   it('reads Connected & Active when available, and never "Pending" next to it', () => {
     expect(step(READY, 'google')).toMatchObject({ done: true, status: 'Connected & Active' });
   });

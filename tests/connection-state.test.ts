@@ -320,6 +320,25 @@ describe('the other connection states stay distinct', () => {
     expect(state.apiAccessMessage).toMatch(/enable/i);
   });
 
+  it('one disabled API is reported as partly working, not hidden behind a green status', async () => {
+    handlers.reviews = () =>
+      fail(403, {
+        error: {
+          status: 'PERMISSION_DENIED',
+          message: 'Google My Business API has not been used in project 1 before or it is disabled.',
+          details: [{ reason: 'SERVICE_DISABLED', metadata: { service: 'mybusiness.googleapis.com' } }],
+        },
+      });
+    const { getConnectionState } = await load();
+    const state = await getConnectionState({ refresh: true });
+    // Accounts, locations, posts and performance answered, so access is proven…
+    expect(state.apiAccess).toBe('available');
+    // …but the page must still say Reviews is not working, and why.
+    expect(state.access.degraded.map((s) => s.service)).toEqual(['reviews']);
+    expect(state.apiAccessMessage).toMatch(/Reviews is not working/);
+    expect(state.apiAccessMessage).toMatch(/switched off/i);
+  });
+
   it('a 404 for the location does not mark access broken', async () => {
     handlers.reviews = () => fail(404);
     const { getConnectionState } = await load();

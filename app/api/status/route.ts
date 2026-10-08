@@ -16,7 +16,7 @@ import { ensureAccessChecked, getLocationTitle, resolveTarget } from '@/lib/conn
 import { AppError } from '@/lib/errors';
 import { readAccess, shouldSkipGoogleCalls } from '@/lib/gbp-access';
 import { mockReviewsResult } from '@/lib/gbp-mock';
-import { ACCESS_LABEL, type GbpAccessSnapshot } from '@/lib/gbp-status';
+import { accessLabel, type GbpAccessSnapshot } from '@/lib/gbp-status';
 import { getCredentialState } from '@/lib/google-auth';
 import { listReviews } from '@/lib/google-business';
 import { getCachedReviews, getSettings, latestRuns, listDrafts, listPosts, listRuns } from '@/lib/repository';
@@ -47,6 +47,9 @@ function accessWarnings(access: GbpAccessSnapshot): string[] {
       return ['Google is rate limiting requests right now. This is temporary.'];
     case 'error':
       return ['Google returned an unexpected error. This is usually temporary.'];
+    case 'available':
+      // Proven access, but some API is failing: say so instead of a green card.
+      return access.degraded.length > 0 ? [access.message] : [];
     default:
       return [];
   }
@@ -137,7 +140,7 @@ export async function GET(request: Request) {
       access = await readAccess();
     }
 
-    const label = ACCESS_LABEL[access.status].label;
+    const label = accessLabel(access).label;
     const locationTitle = locationPath ? await getLocationTitle(locationPath, settings) : undefined;
 
     const summary: DashboardSummary = {

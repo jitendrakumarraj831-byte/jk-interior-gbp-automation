@@ -14,12 +14,56 @@ import { useState } from 'react';
 import { api, ApiError, relativeTime } from '@/lib/client';
 import {
   ACCESS_LABEL,
+  GBP_SERVICE_API,
   GBP_SERVICES,
   GBP_SERVICE_LABEL,
+  GOOGLE_API_TITLES,
   type GbpAccessSnapshot,
+  type ServiceAccess,
 } from '@/lib/gbp-status';
-import { RefreshIcon } from './icons';
-import { Badge, Button, type Tone } from './ui';
+import { AlertIcon, RefreshIcon } from './icons';
+import { Badge, Button, Callout, type Tone } from './ui';
+
+/**
+ * What to do about one API that is not working. Names the exact Google Cloud API
+ * when it is switched off — "the APIs are off" alone leaves the owner guessing
+ * which of four to enable. Null when nothing specific is known.
+ */
+export function serviceHint(record: ServiceAccess): string | null {
+  if (record.status === 'available') return null;
+  const api = GBP_SERVICE_API[record.service];
+  const title = GOOGLE_API_TITLES[api] ?? api;
+  if (record.lastCode === 'GBP_API_NOT_ENABLED') {
+    return `Enable "${title}" (${api}) in Google Cloud Console → APIs & Services → Library, then check access again.`;
+  }
+  switch (record.status) {
+    case 'pending':
+      return `Google has not opened "${title}" for this project yet. It switches on by itself once approved.`;
+    case 'rate_limited':
+      return 'Google is rate limiting this API right now. This is temporary.';
+    case 'permission_error':
+      return 'The connected Google account is not allowed to use this API for this profile.';
+    default:
+      return null;
+  }
+}
+
+/** Shown when access is proven but some API is failing — the part a green badge hides. */
+export function DegradedNotice({ access }: { access: GbpAccessSnapshot }) {
+  if (access.degraded.length === 0) return null;
+  return (
+    <Callout tone="warning" title="Some Google APIs are not working" icon={<AlertIcon size={18} />}>
+      <ul className="mt-1 list-disc space-y-1.5 pl-5">
+        {access.degraded.map((record) => (
+          <li key={record.service} className="[overflow-wrap:anywhere]">
+            <strong>{GBP_SERVICE_LABEL[record.service]}</strong>
+            {serviceHint(record) ? ` — ${serviceHint(record)}` : ''}
+          </li>
+        ))}
+      </ul>
+    </Callout>
+  );
+}
 
 /** One row per Google API: what it last did, and when it last worked. */
 export function AccessServiceList({ access }: { access: GbpAccessSnapshot }) {
@@ -44,6 +88,11 @@ export function AccessServiceList({ access }: { access: GbpAccessSnapshot }) {
                     ? `Checked ${relativeTime(record.checkedAt)}`
                     : 'Not checked yet'}
               </p>
+              {record && serviceHint(record) ? (
+                <p className="mt-1 text-xs leading-relaxed text-warning-700 [overflow-wrap:anywhere]">
+                  {serviceHint(record)}
+                </p>
+              ) : null}
             </div>
             <Badge tone={meta.tone as Tone} dot>
               {record?.status === 'available' ? 'Working' : meta.label}

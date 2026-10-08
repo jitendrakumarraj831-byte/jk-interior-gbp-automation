@@ -45,6 +45,26 @@ export const GBP_SERVICE_LABEL: Record<GbpService, string> = {
   performance: 'Performance',
 };
 
+/**
+ * The Google Cloud API behind each service. A Cloud project must have every one
+ * of these switched on in APIs & Services → Library, so when a service answers
+ * "API disabled" this is the name to tell the owner to look for.
+ */
+export const GOOGLE_API_TITLES: Record<string, string> = {
+  'mybusinessaccountmanagement.googleapis.com': 'My Business Account Management API',
+  'mybusinessbusinessinformation.googleapis.com': 'My Business Business Information API',
+  'mybusiness.googleapis.com': 'Google My Business API',
+  'businessprofileperformance.googleapis.com': 'Business Profile Performance API',
+};
+
+export const GBP_SERVICE_API: Record<GbpService, string> = {
+  accounts: 'mybusinessaccountmanagement.googleapis.com',
+  locations: 'mybusinessbusinessinformation.googleapis.com',
+  reviews: 'mybusiness.googleapis.com',
+  posts: 'mybusiness.googleapis.com',
+  performance: 'businessprofileperformance.googleapis.com',
+};
+
 /** What one API last did. */
 export type ServiceAccess = {
   service: GbpService;
@@ -90,6 +110,21 @@ export const ACCESS_LABEL: Record<
   error: { label: 'Connection problem', tone: 'danger' },
   unknown: { label: 'Not checked yet', tone: 'neutral' },
 };
+
+/**
+ * The badge every screen shows for a snapshot. "Connected & Active" only when
+ * nothing is failing: if access is proven but some API is not working, every
+ * screen says "Partly working" instead, so no green badge sits next to an error.
+ */
+export function accessLabel(access: Pick<GbpAccessSnapshot, 'status' | 'degraded'>): {
+  label: string;
+  tone: 'success' | 'warning' | 'danger' | 'neutral';
+} {
+  if (access.status === 'available' && access.degraded.length > 0) {
+    return { label: 'Partly working', tone: 'warning' };
+  }
+  return ACCESS_LABEL[access.status];
+}
 
 /** Human-readable summary for the UI. Contains no secret and no raw error. */
 export function describeAccess(status: GbpAccessStatus, code?: AppErrorCode): string {
@@ -183,15 +218,41 @@ export function deriveSnapshot(
     lastCode = worst.lastCode;
   }
 
+  const degraded = status === 'available' ? services.filter((s) => s.status !== 'available') : [];
+
   return {
     status,
-    message: describeAccess(status, lastCode),
+    message:
+      degraded.length > 0 ? describeDegraded(degraded) : describeAccess(status, lastCode),
     checkedAt,
     lastSuccessAt,
     lastCode,
     services,
-    degraded: status === 'available' ? services.filter((s) => s.status !== 'available') : [],
+    degraded,
   };
+}
+
+/**
+ * Says so when access is proven but some API is not working. Without this, one
+ * healthy API makes every screen read "Connected and active" while Reviews or
+ * Posts quietly fail — the owner would see a green status and an error side by
+ * side with nothing connecting them.
+ */
+export function describeDegraded(degraded: ServiceAccess[]): string {
+  const names = degraded.map((s) => GBP_SERVICE_LABEL[s.service]);
+  const list =
+    names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  const disabled = degraded.some((s) => s.lastCode === 'GBP_API_NOT_ENABLED');
+  const pending = degraded.every((s) => s.status === 'pending');
+  const verb = names.length === 1 ? 'is' : 'are';
+
+  if (disabled) {
+    return `Google is answering, but ${list} ${verb} not working: the API is switched off for your Google Cloud project. Enable it in Google Cloud Console, then check access again.`;
+  }
+  if (pending) {
+    return `Google is answering. ${list} ${verb} still waiting for Google to open access.`;
+  }
+  return `Google is answering, but ${list} ${verb} not working right now — see the list of Google APIs.`;
 }
 
 function latest(values: (string | undefined | null)[]): string | null {

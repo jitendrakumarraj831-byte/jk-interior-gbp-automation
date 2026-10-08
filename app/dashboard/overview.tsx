@@ -67,7 +67,7 @@ type SettingsPayload = {
     aiModels: Record<string, string>;
     business: { name: string };
   };
-  gbpAccess: { status: string; message: string };
+  gbpAccess: { status: string; message: string; degraded?: { service: string }[] };
   runtime: { storeReachable: boolean; lastCronRunAt: string | null; cronFailed: boolean };
 };
 
@@ -88,7 +88,8 @@ function connectionTone(summary: DashboardSummary | null): Tone {
   if (!summary) return 'neutral';
   switch (summary.connection.status) {
     case 'available':
-      return 'google';
+      // Proven access with a failing API is a warning, not plain green.
+      return summary.access.degraded.length > 0 ? 'warning' : 'google';
     case 'pending':
     case 'rate_limited':
       return 'warning';
@@ -218,6 +219,7 @@ export default function DashboardOverview() {
     ? {
         ...settings.config,
         gbpAccess: summary?.access.status ?? settings.gbpAccess.status,
+        gbpDegraded: (summary?.access ?? settings.gbpAccess).degraded?.map((s) => s.service) ?? [],
         storeReachable: settings.runtime.storeReachable,
         lastCronRunAt: settings.runtime.lastCronRunAt,
         cronFailed: settings.runtime.cronFailed,
@@ -349,7 +351,7 @@ export default function DashboardOverview() {
                 <p className="text-[0.9375rem] font-semibold text-ink-950">
                   Google Business Profile
                 </p>
-                <StatusPill tone={tone} pulse={connected}>
+                <StatusPill tone={tone} pulse={connected && tone === 'google'}>
                   {summary.connection.label}
                 </StatusPill>
               </div>
