@@ -160,8 +160,11 @@ describe('classifyGoogleError', () => {
     expect(error.code).toBe('GBP_API_NOT_ENABLED');
     expect(error.message).toContain('Google My Business API');
     expect(error.message).toContain('mybusiness.googleapis.com');
-    // The project number is Google's detail, not ours to repeat on screen.
-    expect(error.message).not.toContain('123456');
+    // The project number is what exposes "enabled in the wrong project", the
+    // commonest reason an API stays off after the owner switched it on.
+    expect(error.message).toContain('Google Cloud project 123456');
+    expect(error.message).toMatch(/that same project/);
+    expect(error.disabledApi).toEqual({ service: 'mybusiness.googleapis.com', project: '123456' });
   });
 
   it('reads the disabled API from the activation URL when the details carry none', async () => {
@@ -176,7 +179,7 @@ describe('classifyGoogleError', () => {
     });
     expect(error.code).toBe('GBP_API_NOT_ENABLED');
     expect(error.message).toContain('My Business Account Management API');
-    expect(error.message).not.toContain('123456');
+    expect(error.disabledApi?.project).toBe('123456');
   });
 
   it('never echoes a malformed service value from the payload', async () => {
@@ -185,12 +188,18 @@ describe('classifyGoogleError', () => {
       error: {
         status: 'PERMISSION_DENIED',
         message: 'API has not been used in project 1 before or it is disabled.',
-        details: [{ reason: 'SERVICE_DISABLED', metadata: { service: 'evil <b>x</b>.example.com' } }],
+        details: [
+          {
+            reason: 'SERVICE_DISABLED',
+            metadata: { service: 'evil <b>x</b>.example.com', consumer: 'projects/12 <i>x</i>' },
+          },
+        ],
       },
     });
     expect(error.code).toBe('GBP_API_NOT_ENABLED');
-    expect(error.message).not.toMatch(/evil|<b>/);
-    expect(error.message).toMatch(/switched off/);
+    expect(error.message).not.toMatch(/evil|<b>|<i>/);
+    expect(error.message).toMatch(/switched off for this Google Cloud project/);
+    expect(error.disabledApi).toEqual({ service: undefined, project: undefined });
   });
 
   it('403 insufficient scope asks the owner to reconnect', async () => {
@@ -592,5 +601,17 @@ describe('partly working access', () => {
     const { serviceHint } = await import('@/components/gbp-access-panel');
     expect(serviceHint(reviewsOff)).toMatch(/Google My Business API.*mybusiness\.googleapis\.com/);
     expect(serviceHint(ok('accounts'))).toBeNull();
+  });
+
+  it('names the project Google reported, and prefers the API Google named over our guess', async () => {
+    const { serviceHint } = await import('@/components/gbp-access-panel');
+    const hint = serviceHint({ ...reviewsOff, apiService: 'mybusiness.googleapis.com', project: '123456789' });
+    expect(hint).toMatch(/Cloud project 123456789/);
+    expect(hint).toMatch(/that same project/);
+
+    // Google named a different API than the one we would have guessed for Reviews.
+    const other = serviceHint({ ...reviewsOff, apiService: 'mybusinessbusinessinformation.googleapis.com' });
+    expect(other).toMatch(/My Business Business Information API/);
+    expect(other).not.toMatch(/Google My Business API/);
   });
 });

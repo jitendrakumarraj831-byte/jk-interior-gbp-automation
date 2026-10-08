@@ -31,10 +31,13 @@ import { Badge, Button, Callout, type Tone } from './ui';
  */
 export function serviceHint(record: ServiceAccess): string | null {
   if (record.status === 'available') return null;
-  const api = GBP_SERVICE_API[record.service];
+  // Prefer the API Google actually named over our own idea of which one it is.
+  const api = record.apiService ?? GBP_SERVICE_API[record.service];
   const title = GOOGLE_API_TITLES[api] ?? api;
   if (record.lastCode === 'GBP_API_NOT_ENABLED') {
-    return `Enable "${title}" (${api}) in Google Cloud Console → APIs & Services → Library, then check access again.`;
+    return record.project
+      ? `Google says "${title}" (${api}) is off for Cloud project ${record.project}. Enable it in that same project (APIs & Services → Library), wait a few minutes, then check access again.`
+      : `Enable "${title}" (${api}) in Google Cloud Console → APIs & Services → Library, wait a few minutes, then check access again.`;
   }
   switch (record.status) {
     case 'pending':

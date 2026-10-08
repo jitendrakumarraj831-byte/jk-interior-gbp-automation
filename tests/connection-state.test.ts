@@ -325,8 +325,13 @@ describe('the other connection states stay distinct', () => {
       fail(403, {
         error: {
           status: 'PERMISSION_DENIED',
-          message: 'Google My Business API has not been used in project 1 before or it is disabled.',
-          details: [{ reason: 'SERVICE_DISABLED', metadata: { service: 'mybusiness.googleapis.com' } }],
+          message: 'Google My Business API has not been used in project 123456789 before or it is disabled.',
+          details: [
+            {
+              reason: 'SERVICE_DISABLED',
+              metadata: { service: 'mybusiness.googleapis.com', consumer: 'projects/123456789' },
+            },
+          ],
         },
       });
     const { getConnectionState } = await load();
@@ -337,6 +342,13 @@ describe('the other connection states stay distinct', () => {
     expect(state.access.degraded.map((s) => s.service)).toEqual(['reviews']);
     expect(state.apiAccessMessage).toMatch(/Reviews is not working/);
     expect(state.apiAccessMessage).toMatch(/switched off/i);
+    // The state keeps which API and which project Google named, for the hint.
+    expect(state.access.degraded[0]).toMatchObject({
+      service: 'reviews',
+      lastCode: 'GBP_API_NOT_ENABLED',
+      apiService: 'mybusiness.googleapis.com',
+      project: '123456789',
+    });
   });
 
   it('a 404 for the location does not mark access broken', async () => {
