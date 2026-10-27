@@ -170,6 +170,10 @@ export async function recordServiceFailure(
       checkedAt: now,
       lastSuccessAt: previous?.lastSuccessAt,
       lastCode: error.code,
+      // Which API, in which project — so the owner can see a project mismatch.
+      ...(error.code === 'GBP_API_NOT_ENABLED' && error.disabledApi
+        ? { apiService: error.disabledApi.service, project: error.disabledApi.project }
+        : {}),
     });
   } catch {
     /* best effort */

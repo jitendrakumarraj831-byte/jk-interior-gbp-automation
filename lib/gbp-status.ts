@@ -75,6 +75,9 @@ export type ServiceAccess = {
   lastSuccessAt?: string;
   /** Machine-readable reason for a non-available status. Never a Google payload. */
   lastCode?: AppErrorCode;
+  /** For "API switched off": the API Google named, and the Cloud project number it named. */
+  apiService?: string;
+  project?: string;
 };
 
 /** A credential-level failure, shared by every API. */

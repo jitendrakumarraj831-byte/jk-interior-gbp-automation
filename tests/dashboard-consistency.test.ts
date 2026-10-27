@@ -269,6 +269,26 @@ describe('OAuth connected, Performance API live, an older "pending" still stored
     expect(steps.filter((s) => s.done)).toHaveLength(3);
   });
 
+  it('a disabled API\'s project number reaches the admin pages but never the public health endpoint', async () => {
+    const app = await loadAll();
+    google.reviews = () => ({
+      status: 403,
+      body: {
+        error: {
+          status: 'PERMISSION_DENIED',
+          message: 'Google My Business API has not been used in project 123456789 before or it is disabled.',
+          details: [
+            { reason: 'SERVICE_DISABLED', metadata: { service: 'mybusiness.googleapis.com', consumer: 'projects/123456789' } },
+          ],
+        },
+      },
+    });
+    const all = await everySurface(app);
+    expect(JSON.stringify(all.summary.access)).toContain('123456789');
+    expect(JSON.stringify((await app.health()))).not.toContain('123456789');
+    expect(JSON.stringify(all.systemHealth)).not.toContain('123456789');
+  });
+
   it('live reviews and performance are labelled live (google), with real numbers', async () => {
     const app = await loadAll();
     await stalePending(app);

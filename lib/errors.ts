@@ -37,18 +37,30 @@ export type AppErrorCode =
   | 'META_MEDIA_INVALID'
   | 'MEDIA_STORAGE_NOT_CONFIGURED';
 
+/** Structured facts about a disabled Google API. Identifiers only — never a credential. */
+export type DisabledApiInfo = { service?: string; project?: string };
+
 export class AppError extends Error {
   readonly code: AppErrorCode;
   readonly httpStatus: number;
   /** Extra context that is safe to show — never raw credentials. */
   readonly detail?: string;
+  /** Which API Google says is switched off, and for which Cloud project. */
+  readonly disabledApi?: DisabledApiInfo;
 
-  constructor(code: AppErrorCode, message: string, httpStatus = 500, detail?: string) {
+  constructor(
+    code: AppErrorCode,
+    message: string,
+    httpStatus = 500,
+    detail?: string,
+    disabledApi?: DisabledApiInfo,
+  ) {
     super(message);
     this.name = 'AppError';
     this.code = code;
     this.httpStatus = httpStatus;
     this.detail = detail;
+    this.disabledApi = disabledApi;
   }
 }
 
@@ -62,6 +74,8 @@ type GoogleErrorInfo = {
   quotaLimitValue?: string;
   /** For a disabled API: its service id, e.g. "mybusiness.googleapis.com". Validated. */
   service?: string;
+  /** For a disabled API: the Cloud project NUMBER Google refers to. Digits only. */
+  project?: string;
 };
 
 /** Only a bare Google API host is ever kept — never free text from the payload. */
@@ -81,6 +95,26 @@ function disabledServiceOf(
   // The human message carries the activation URL, which contains the same id.
   const fromMessage = /\/apis\/api\/([a-z][a-z0-9-]*\.googleapis\.com)\b/.exec(message);
   return fromMessage?.[1];
+}
+
+/**
+ * The Cloud project number Google says the API is disabled for. This is what
+ * lets the owner see that the API was enabled in a DIFFERENT project from the
+ * one the OAuth client belongs to — the commonest reason it "stays" disabled.
+ * A project number is an identifier (it is in every Console URL), not a secret.
+ */
+function disabledProjectOf(
+  details: { metadata?: Record<string, unknown> }[],
+  message: string,
+): string | undefined {
+  for (const detail of details) {
+    const consumer = detail?.metadata?.consumer;
+    const fromConsumer = typeof consumer === 'string' ? /^projects\/(\d{4,20})$/.exec(consumer) : null;
+    if (fromConsumer) return fromConsumer[1];
+    const container = detail?.metadata?.containerInfo;
+    if (typeof container === 'string' && /^\d{4,20}$/.test(container)) return container;
+  }
+  return (/in project (\d{4,20})\b/.exec(message) ?? /[?&]project=(\d{4,20})\b/.exec(message))?.[1];
 }
 
 /** "Google My Business API (mybusiness.googleapis.com)" — what to search for in the Library. */
@@ -120,6 +154,7 @@ function inspectGoogleError(body: unknown): GoogleErrorInfo {
     message,
     quotaLimitValue,
     service: disabledServiceOf(error.details ?? [], message),
+    project: disabledProjectOf(error.details ?? [], message),
   };
 }
 
@@ -201,13 +236,16 @@ export function classifyGoogleError(httpStatus: number, body: unknown): AppError
         'it is disabled',
       )
     ) {
+      const where = info.project ? `Google Cloud project ${info.project}` : 'this Google Cloud project';
+      const what = info.service ? `The ${describeService(info.service)}` : 'A Business Profile API';
       return new AppError(
         'GBP_API_NOT_ENABLED',
-        info.service
-          ? `The ${describeService(info.service)} is switched off for this Google Cloud project. Enable it in Google Cloud Console (APIs & Services → Library), then check access again.`
-          : 'A Business Profile API is switched off for this Google Cloud project. Enable it in Google Cloud Console (APIs & Services → Library), then check access again.',
+        `${what} is switched off for ${where}. Enable it in ${
+          info.project ? 'that same project' : 'Google Cloud Console'
+        } (APIs & Services → Library), wait a few minutes, then check access again.`,
         503,
         info.service,
+        { service: info.service, project: info.project },
       );
     }
 
